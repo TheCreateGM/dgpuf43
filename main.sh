@@ -25,6 +25,7 @@ SYSTEM_TUNE_PATH="/usr/local/bin/system-tune"
 PRIME_SETUP_PATH="/usr/local/bin/prime-setup"
 GPU_COOP_PATH="/usr/local/bin/gpu-coop"
 GPU_PARALLEL_FFMPEG="/usr/local/bin/gpu-parallel-ffmpeg"
+LOSSLESS_SCALE_PATH="/usr/local/bin/lossless-scale"
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -593,6 +594,298 @@ chmod 755 "${GPU_PARALLEL_FFMPEG}"
 success "gpu-parallel-ffmpeg installed at ${GPU_PARALLEL_FFMPEG}"
 
 success "Cooperative mode helper scripts installed."
+
+################################################################################
+# PHASE 3C: LOSSLESS SCALING SUPPORT (gamescope-based)
+################################################################################
+log "Installing lossless scaling support (gamescope + helpers)..."
+
+# Install gamescope and related packages
+ensure_pkgs gamescope mangohud goverlay
+
+# lossless-scale: Lossless Scaling equivalent for Linux using gamescope
+cat > "${LOSSLESS_SCALE_PATH}" <<'LOSSLESSSCALE_EOF'
+#!/usr/bin/env bash
+# lossless-scale: Lossless Scaling equivalent for Linux
+# Provides integer scaling, FSR upscaling, and frame generation via gamescope
+#
+# Usage:
+#   lossless-scale [options] <command> [args...]
+#
+# Options:
+#   --integer         Integer (pixel-perfect) scaling (default)
+#   --fsr             FSR upscaling (AMD FidelityFX Super Resolution)
+#   --fsr-ultra       FSR Ultra Quality mode
+#   --fsr-quality     FSR Quality mode
+#   --fsr-balanced    FSR Balanced mode
+#   --fsr-performance FSR Performance mode
+#   --nis             NVIDIA Image Scaling (NIS) mode
+#   --res WxH         Internal render resolution (e.g., 1280x720)
+#   --output WxH      Output/display resolution (e.g., 1920x1080)
+#   --fps N           Frame limit (e.g., 60)
+#   --fps-unfocused N Frame limit when window unfocused
+#   --fullscreen      Force fullscreen mode
+#   --borderless      Borderless windowed mode
+#   --hdr             Enable HDR support (if available)
+#   --mangohud        Enable MangoHud overlay
+#   --gpu nvidia      Force NVIDIA GPU for rendering
+#   --gpu amd         Force AMD GPU for rendering
+#   --help            Show this help message
+#
+# Examples:
+#   lossless-scale --integer --res 1280x720 --output 1920x1080 game.exe
+#   lossless-scale --fsr-quality --fps 60 --mangohud steam
+#   lossless-scale --fsr --res 2560x1440 --output 3840x2160 ./game
+
+set -euo pipefail
+
+show_help() {
+    echo "lossless-scale: Lossless Scaling equivalent for Linux (via gamescope)"
+    echo ""
+    echo "Usage: lossless-scale [options] <command> [args...]"
+    echo ""
+    echo "Scaling Modes:"
+    echo "  --integer           Integer (pixel-perfect) scaling (default)"
+    echo "  --fsr               FSR upscaling (auto quality)"
+    echo "  --fsr-ultra         FSR Ultra Quality (1.3x scale)"
+    echo "  --fsr-quality       FSR Quality (1.5x scale)"
+    echo "  --fsr-balanced      FSR Balanced (1.7x scale)"
+    echo "  --fsr-performance   FSR Performance (2x scale)"
+    echo "  --nis               NVIDIA Image Scaling mode"
+    echo ""
+    echo "Resolution Options:"
+    echo "  --res WxH           Internal render resolution (e.g., 1280x720)"
+    echo "  --output WxH        Output/display resolution (e.g., 1920x1080)"
+    echo ""
+    echo "Frame Options:"
+    echo "  --fps N             Frame limit (e.g., 60, 120, 144)"
+    echo "  --fps-unfocused N   Frame limit when window unfocused"
+    echo ""
+    echo "Display Options:"
+    echo "  --fullscreen        Force fullscreen mode"
+    echo "  --borderless        Borderless windowed mode"
+    echo "  --hdr               Enable HDR support"
+    echo ""
+    echo "Extras:"
+    echo "  --mangohud          Enable MangoHud performance overlay"
+    echo "  --gpu nvidia|amd    Force specific GPU for rendering"
+    echo ""
+    echo "Examples:"
+    echo "  lossless-scale --integer --res 1280x720 steam"
+    echo "  lossless-scale --fsr-quality --fps 60 ./game"
+    echo "  lossless-scale --fsr --mangohud --gpu nvidia blender"
+    echo ""
+    exit 0
+}
+
+if ! command -v gamescope &>/dev/null; then
+    echo "Error: gamescope is not installed. Install it with:"
+    echo "  sudo dnf install gamescope"
+    exit 1
+fi
+
+# Defaults
+SCALE_MODE="integer"
+FSR_SHARPNESS=5
+INTERNAL_RES=""
+OUTPUT_RES=""
+FPS_LIMIT=""
+FPS_UNFOCUSED=""
+FULLSCREEN=false
+BORDERLESS=false
+HDR=false
+MANGOHUD=false
+GPU_SELECT=""
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --help|-h)
+            show_help
+            ;;
+        --integer)
+            SCALE_MODE="integer"
+            shift
+            ;;
+        --fsr)
+            SCALE_MODE="fsr"
+            FSR_SHARPNESS=5
+            shift
+            ;;
+        --fsr-ultra)
+            SCALE_MODE="fsr"
+            FSR_SHARPNESS=3
+            shift
+            ;;
+        --fsr-quality)
+            SCALE_MODE="fsr"
+            FSR_SHARPNESS=5
+            shift
+            ;;
+        --fsr-balanced)
+            SCALE_MODE="fsr"
+            FSR_SHARPNESS=7
+            shift
+            ;;
+        --fsr-performance)
+            SCALE_MODE="fsr"
+            FSR_SHARPNESS=10
+            shift
+            ;;
+        --nis)
+            SCALE_MODE="nis"
+            shift
+            ;;
+        --res)
+            INTERNAL_RES="$2"
+            shift 2
+            ;;
+        --output)
+            OUTPUT_RES="$2"
+            shift 2
+            ;;
+        --fps)
+            FPS_LIMIT="$2"
+            shift 2
+            ;;
+        --fps-unfocused)
+            FPS_UNFOCUSED="$2"
+            shift 2
+            ;;
+        --fullscreen)
+            FULLSCREEN=true
+            shift
+            ;;
+        --borderless)
+            BORDERLESS=true
+            shift
+            ;;
+        --hdr)
+            HDR=true
+            shift
+            ;;
+        --mangohud)
+            MANGOHUD=true
+            shift
+            ;;
+        --gpu)
+            GPU_SELECT="$2"
+            shift 2
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -*)
+            echo "Unknown option: $1"
+            echo "Use --help for usage information."
+            exit 1
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+if [[ $# -eq 0 ]]; then
+    echo "Error: No command specified."
+    echo "Usage: lossless-scale [options] <command> [args...]"
+    exit 1
+fi
+
+# Build gamescope arguments
+GS_ARGS=()
+
+# Resolution settings
+if [[ -n "$INTERNAL_RES" ]]; then
+    IFS='x' read -r W H <<< "$INTERNAL_RES"
+    GS_ARGS+=(-w "$W" -h "$H")
+fi
+
+if [[ -n "$OUTPUT_RES" ]]; then
+    IFS='x' read -r OW OH <<< "$OUTPUT_RES"
+    GS_ARGS+=(-W "$OW" -H "$OH")
+fi
+
+# Scaling mode
+case "$SCALE_MODE" in
+    integer)
+        GS_ARGS+=(-S integer)
+        echo "[lossless-scale] Using integer (pixel-perfect) scaling"
+        ;;
+    fsr)
+        GS_ARGS+=(-F fsr -S fit --fsr-sharpness "$FSR_SHARPNESS")
+        echo "[lossless-scale] Using FSR upscaling (sharpness: $FSR_SHARPNESS)"
+        ;;
+    nis)
+        GS_ARGS+=(-F nis -S fit)
+        echo "[lossless-scale] Using NIS (NVIDIA Image Scaling)"
+        ;;
+esac
+
+# Frame limiting
+if [[ -n "$FPS_LIMIT" ]]; then
+    GS_ARGS+=(-r "$FPS_LIMIT")
+    echo "[lossless-scale] Frame limit: ${FPS_LIMIT} fps"
+fi
+
+if [[ -n "$FPS_UNFOCUSED" ]]; then
+    GS_ARGS+=(-o "$FPS_UNFOCUSED")
+    echo "[lossless-scale] Unfocused frame limit: ${FPS_UNFOCUSED} fps"
+fi
+
+# Display options
+if $FULLSCREEN; then
+    GS_ARGS+=(-f)
+    echo "[lossless-scale] Fullscreen mode enabled"
+fi
+
+if $BORDERLESS; then
+    GS_ARGS+=(-b)
+    echo "[lossless-scale] Borderless mode enabled"
+fi
+
+if $HDR; then
+    GS_ARGS+=(--hdr-enabled)
+    echo "[lossless-scale] HDR enabled"
+fi
+
+# GPU selection environment
+if [[ "$GPU_SELECT" == "nvidia" ]]; then
+    export __NV_PRIME_RENDER_OFFLOAD=1
+    export __GLX_VENDOR_LIBRARY_NAME=nvidia
+    export DRI_PRIME=0
+    echo "[lossless-scale] Using NVIDIA GPU for rendering"
+elif [[ "$GPU_SELECT" == "amd" ]]; then
+    unset __NV_PRIME_RENDER_OFFLOAD 2>/dev/null || true
+    unset __GLX_VENDOR_LIBRARY_NAME 2>/dev/null || true
+    export LIBVA_DRIVER_NAME=radeonsi
+    echo "[lossless-scale] Using AMD GPU for rendering"
+fi
+
+# MangoHud
+if $MANGOHUD; then
+    if command -v mangohud &>/dev/null; then
+        export MANGOHUD=1
+        echo "[lossless-scale] MangoHud overlay enabled"
+    else
+        echo "[lossless-scale] Warning: MangoHud not installed, skipping overlay"
+    fi
+fi
+
+# Build final command
+CMD=("$@")
+echo "[lossless-scale] Launching: ${CMD[*]}"
+echo "[lossless-scale] gamescope args: ${GS_ARGS[*]}"
+echo ""
+
+# Execute with gamescope
+exec gamescope "${GS_ARGS[@]}" -- "${CMD[@]}"
+LOSSLESSCALE_EOF
+chmod 755 "${LOSSLESS_SCALE_PATH}"
+success "lossless-scale utility installed at ${LOSSLESS_SCALE_PATH}"
+
+success "Lossless scaling support installed."
 
 ################################################################################
 # PHASE 4: SYSTEM OPTIMIZATION & PERFORMANCE TUNING
@@ -1225,12 +1518,19 @@ echo ""
 echo "6. For large video encodes, use the parallel encoder helper:"
 echo "   ${CYAN}gpu-parallel-ffmpeg -i input.mp4 -o output.mp4 -j 2${NC}"
 echo ""
+echo "7. Use lossless scaling for games (integer scaling, FSR, NIS):"
+echo "   ${CYAN}lossless-scale --help                                  ${NC}(show all options)"
+echo "   ${CYAN}lossless-scale --integer --res 1280x720 steam          ${NC}(pixel-perfect 720p->native)"
+echo "   ${CYAN}lossless-scale --fsr-quality --fps 60 ./game           ${NC}(FSR upscaling + 60fps cap)"
+echo "   ${CYAN}lossless-scale --fsr --mangohud --gpu nvidia game      ${NC}(FSR + overlay + NVIDIA)"
+echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo -e "${CYAN}WHAT WAS CONFIGURED:${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo "✓ Cooperative GPU workflows (PRIME Render Offload + Vulkan multi-ICD hints)"
 echo "✓ Intelligent helper scripts (smart-run, gpu-coop, gpu-parallel-ffmpeg, prime-setup)"
+echo "✓ Lossless scaling support (gamescope-based integer/FSR/NIS scaling)"
 echo "✓ Automatic driver installation (NVIDIA, AMD) where GPUs detected"
 echo "✓ NVIDIA persistence enabled and akmods configuration"
 echo "✓ GPU power management with runtime autosuspend"
