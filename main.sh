@@ -881,7 +881,7 @@ echo ""
 
 # Execute with gamescope
 exec gamescope "${GS_ARGS[@]}" -- "${CMD[@]}"
-LOSSLESSCALE_EOF
+LOSSLESSSCALE_EOF
 chmod 755 "${LOSSLESS_SCALE_PATH}"
 success "lossless-scale utility installed at ${LOSSLESS_SCALE_PATH}"
 
@@ -1513,7 +1513,7 @@ echo "5. Run applications with optimal GPU selection:"
 echo "   ${CYAN}smart-run <app>              ${NC}(auto GPU selection)"
 echo "   ${CYAN}smart-run --nvidia <app>    ${NC}(force NVIDIA GTX 1650)"
 echo "   ${CYAN}smart-run --amd <app>       ${NC}(force AMD RX 6400)"
-echo "   ${CYAN}smart-run --balanced <app>  ${NC}(use both GPUs / Vulkan multi-ICD)")
+echo "   ${CYAN}smart-run --balanced <app>  ${NC}(use both GPUs / Vulkan multi-ICD)"
 echo ""
 echo "6. For large video encodes, use the parallel encoder helper:"
 echo "   ${CYAN}gpu-parallel-ffmpeg -i input.mp4 -o output.mp4 -j 2${NC}"
