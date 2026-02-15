@@ -1,259 +1,438 @@
-# Fedora 43 Dual-GPU Cooperative Mode Setup & System Optimizer
+# Fedora 43 Advanced System Optimizer
 
-## System Configuration
-- **Motherboard**: ASUS Z390-F
-- **CPU**: Intel Core i9-9900
-- **Primary GPU (PCIE x16 Slot 1)**: AMD RX 6400 (Display/Primary)
-- **Secondary GPU (PCIE x16 Slot 2)**: NVIDIA GTX 1650 (Compute/Render Offload)
-- **OS**: Fedora Linux 43
+Version 4.0.0
+
+A comprehensive, production-ready optimization script for Fedora Linux 43, targeting maximum performance with power efficiency for desktop and gaming workloads.
 
 ---
 
-## Overview
+## Target Hardware
 
-This script auto-detects and configures a dual-GPU (AMD + NVIDIA) system for cooperative workloads:
-
-- **Auto-install missing drivers/packages** (RPM Fusion, NVIDIA, AMD)
-- **Configure PRIME Render Offload** and Vulkan multi-ICD hints
-- **Intelligent workload balancing** and power management
-- **Helper utilities** for easy GPU switching and parallel encoding
-
-> **Note**: AMD and NVIDIA GPUs cannot be physically merged (no SLI/CrossFire). This setup creates a cooperative environment where each GPU handles tasks it's best suited for.
+- **CPU**: Intel Core i9-9900 (8 cores / 16 threads)
+- **RAM**: 64GB DDR4
+- **GPU 1**: AMD RX 6400 XT (Primary Display)
+- **GPU 2**: NVIDIA GTX 1650 (Compute/Offload)
+- **Motherboard**: ASUS Z390-F Gaming
+- **OS**: Fedora Linux 43 (Wayland + X11)
 
 ---
 
-## How It Works
+## Features Overview
 
-### GPU Roles
+### CPU Optimization
 
-| GPU | Role | Use Cases |
-|-----|------|----------|
-| **AMD RX 6400** | Primary Display | Desktop, browser, video playback, VA-API decode |
-| **NVIDIA GTX 1650** | Render Offload | Gaming, Blender/CUDA, NVENC encoding, heavy compute |
+- Intel P-state configuration with `balance_performance` EPP
+- Turbo Boost enabled with dynamic frequency scaling
+- Kernel scheduler tuning for desktop responsiveness
+- Scheduler autogroup for better interactive workloads
+- Custom `tuned` profile (gaming-optimized)
+- thermald integration for thermal management
+- IRQ balancing with custom policy
+- CPU affinity optimization for system services
 
-### Workload Strategy
-```
-Desktop/Light Tasks → AMD RX 6400 (always-on, efficient)
-        ↓
-Heavy Tasks → NVIDIA GTX 1650 (on-demand via PRIME offload)
-        ↓
-Task Completed → NVIDIA suspends (power saving)
-```
+### Advanced CPU Topology Optimization
+
+- NUMA-aware scheduling (single-socket optimization)
+- CPU set configuration for workload isolation
+- System services reserved to cores 0-1
+- Application cores 2-7 (and HT siblings 10-15) available
+- IRQ affinity binding for network/storage/GPU
+- Real-time scheduling improvements
+- Timer migration disabled for lower latency
+
+### Memory Optimization (64GB Aware)
+
+- Low swappiness (10) for high-RAM systems
+- Optimized dirty page ratios to prevent stalls
+- Transparent Huge Pages set to `madvise`
+- ZRAM with zstd compression (16GB / 25% of RAM)
+- EarlyOOM protection against runaway processes
+- `vm.max_map_count` set for gaming compatibility (2147483642)
+- Hugepages pre-allocated (1024 x 2MB = 2GB)
+- VFS cache pressure optimization
+- Memory compaction for reduced fragmentation
+- Preload for predictive application caching
+
+### Dual-GPU Setup (AMD + NVIDIA)
+
+- **AMD RX 6400 XT**: Primary display, Vulkan/RADV, VA-API
+- **NVIDIA GTX 1650**: PRIME render offload, compute tasks
+- Automatic NVIDIA driver installation (akmod)
+- NVIDIA persistence mode and power management
+- GPU selection utilities for per-application control
+- Enhanced AMD RDNA2 optimizations (ACO, GPL, NGGC, SAM)
+- User-accessible GPU power controls via udev rules
+
+### Vulkan Multi-GPU Configuration
+
+- Both GPUs visible to Vulkan applications
+- ICD file management for GPU selection
+- DXVK global configuration with async shaders
+- VKD3D-Proton optimization
+- RADV optimizations for RDNA2
+- Multi-GPU launcher with flexible options
+
+### LSFG-VK Integration
+
+- Lossless Scaling Frame Generation for Vulkan
+- Auto-builds from source during installation
+- Vulkan implicit layer registration
+- Compatible with Steam's Lossless Scaling assets
+- Wrapper script for easy activation
+
+### Magpie-like Upscaling
+
+- GPU-accelerated window upscaling via Gamescope
+- FSR (FidelityFX Super Resolution) support
+- NIS (NVIDIA Image Scaling) support
+- Integer, linear, and nearest scaling modes
+- Presets: 720p, 900p, 1080p, 4K Performance/Balanced/Quality
+- Configurable FSR sharpness (0-20)
+- GPU selection for compositor
+- MangoHud integration
+
+### Virtual Resource Optimization
+
+- cgroups v2 configuration for task isolation
+- systemd slice weights (User > Gaming > System)
+- High-performance slice with maximum CPU/IO/Memory priority
+- Background slice for low-priority tasks
+- User session resource controls
+- Real-time scheduling limits
+- Memory locking allowances
+
+### Network Optimization
+
+- BBR congestion control (Google's algorithm)
+- FQ (Fair Queue) scheduler
+- TCP buffer tuning (32MB max for 64GB RAM)
+- TCP Fast Open enabled
+- Low latency TCP optimizations
+- IRQ balancing with irqbalance
+- NIC hardware offloading (TSO, GSO, GRO)
+- Ring buffer maximization
+- Adaptive interrupt coalescing
+- Connection handling optimization (65535 backlog)
+- ECN (Explicit Congestion Notification) enabled
+
+### Storage Optimization
+
+- Intelligent I/O scheduler selection:
+  - NVMe: `none` (hardware handles queuing)
+  - SATA SSD: `mq-deadline`
+  - HDD: `bfq`
+- Periodic TRIM via fstrim.timer
+- Optimized read-ahead values
+
+### Power Efficiency
+
+- PCIe ASPM (powersave mode)
+- SATA link power management (med_power_with_dipm)
+- USB autosuspend (except HID devices)
+- Intel audio codec power saving
+- Runtime PM for PCI devices
+- Dynamic CPU/GPU downclocking when idle
+
+### Gaming Tools
+
+- **GameMode** with custom configuration
+- **Gamescope** wrapper for FSR upscaling
+- **MangoHud** pre-configured
+- Gaming slice with priority scheduling
+- DXVK async shader compilation
 
 ---
 
 ## Installation
 
-### Step 1: Run the Script
+### Quick Start
+
 ```bash
 chmod +x main.sh
 sudo ./main.sh
 ```
 
 The script will:
-1. Validate system requirements
-2. Enable RPM Fusion repositories
-3. Install AMD (AMDGPU/Mesa) and NVIDIA drivers
-4. Configure PRIME Render Offload for X11/Wayland
-5. Install helper utilities
-6. Optimize CPU, memory, and I/O settings
-7. Configure power management and TLP
-8. Install GameMode and multimedia codecs
 
-### Step 2: Reboot
+1. Detect your hardware (CPU, RAM, GPUs)
+2. Create a backup for rollback
+3. Enable RPM Fusion repositories
+4. Install required packages and NVIDIA drivers
+5. Build and install LSFG-VK
+6. Apply all CPU, memory, GPU, network, and storage optimizations
+7. Configure kernel boot parameters
+8. Install helper utilities
+9. Create verification tools
+
+### After Installation
+
 ```bash
 sudo reboot
-```
-
-### Step 3: Verify Installation
-```bash
-gpu-check
-```
-
-### Step 4 (X11 Only): Set Provider Mappings
-If using X11, run as your session user after login:
-```bash
-prime-setup
+verify-optimization  # Check all optimization states
+system-status        # View system overview
 ```
 
 ---
 
-## Installed Helper Utilities
+## Installed Utilities
 
-The script installs these utilities to `/usr/local/bin/`:
+### GPU and Gaming
 
-| Utility | Description |
+| Command | Description |
 |---------|-------------|
-| `smart-run` | Intelligent GPU workload launcher with auto-detection |
-| `gpu-check` | Comprehensive GPU diagnostics report |
-| `gpu-balance` | Real-time GPU load monitoring |
-| `system-tune` | Interactive system performance tuning |
-| `prime-setup` | X11 provider mapping for PRIME offload |
-| `gpu-coop` | Cooperative GPU mode launcher |
-| `gpu-parallel-ffmpeg` | Parallel video encoding across GPUs |
+| `gpu-select [amd\|nvidia\|parallel\|auto] <cmd>` | Run command on specific GPU |
+| `multigpu-run [options] <cmd>` | Multi-GPU launcher with flexible options |
+| `magpie-linux [options] <cmd>` | FSR/NIS upscaling (Magpie-like) |
+| `lsfg-run <cmd>` | LSFG-VK frame generation |
+| `gaming-run <cmd>` | Run in high-priority gaming slice |
+| `upscale-run <scaler> <w> <h> <cmd>` | Basic Gamescope upscaling wrapper |
+
+### CPU and Performance
+
+| Command | Description |
+|---------|-------------|
+| `cpu-pin <mode> <cmd>` | CPU affinity control |
+| `highperf-run <cmd>` | Maximum performance cgroup slice |
+| `background-run <cmd>` | Low-priority background execution |
+
+### System Management
+
+| Command | Description |
+|---------|-------------|
+| `power-profile <mode>` | Power profile switching |
+| `amd-gpu-mode <mode>` | AMD GPU power control |
+| `nvidia-gpu-mode <mode>` | NVIDIA GPU power control |
+| `optimize-irq` | Optimize IRQ affinity |
+| `nic-optimize <interface>` | Optimize network interface |
+
+### Monitoring and Diagnostics
+
+| Command | Description |
+|---------|-------------|
+| `system-status` | System overview |
+| `vulkan-info` | Vulkan GPU information |
+| `net-benchmark` | Network testing |
+| `perf-test` | Performance benchmarks |
+| `verify-optimization` | Verify all optimizations |
 
 ---
 
-## Usage Guide
+## Usage Examples
 
-### smart-run — Intelligent GPU Launcher
+### GPU Selection
 
 ```bash
-# Auto-select GPU based on application
-smart-run <command>
+# Run Blender on NVIDIA
+gpu-select nvidia blender
 
-# Force specific GPU
-smart-run --nvidia blender
-smart-run --amd firefox
-smart-run --balanced ffmpeg -i video.mp4 -o out.mp4
+# Run Firefox on AMD
+gpu-select amd firefox
+
+# Both GPUs visible (Vulkan multi-GPU)
+gpu-select parallel ./vulkan-app
+
+# Auto-detect (system default)
+gpu-select auto ./app
 ```
 
-**Auto-detection rules:**
-- `blender`, `steam`, `obs` → NVIDIA
-- `ffmpeg`, `kdenlive`, `darktable` → Balanced (both GPUs)
-- Everything else → AMD
-
-### gpu-coop — Cooperative GPU Mode
+### Multi-GPU Launcher
 
 ```bash
-# Run with specific GPU mode
-gpu-coop --nvidia <command>      # NVIDIA only
-gpu-coop --amd <command>         # AMD only
-gpu-coop --balanced <command>    # Both GPUs (Vulkan multi-ICD)
-gpu-coop --auto <command>        # Auto-detect
+# Primary AMD, NVIDIA as secondary
+multigpu-run --primary-amd steam
+
+# NVIDIA only with MangoHud
+multigpu-run --nvidia-only --mangohud ./game
+
+# Both GPUs with LSFG frame generation
+multigpu-run --both --lsfg ./game
+
+# With Gamescope at 1440p
+multigpu-run --gamescope 2560 1440 ./game
 ```
 
-### gpu-parallel-ffmpeg — Parallel Video Encoding
-
-Split and encode video segments in parallel using available GPUs:
+### Magpie-like Upscaling
 
 ```bash
-gpu-parallel-ffmpeg -i input.mp4 -o output.mp4 [-j jobs] [-c codec] [-b bitrate]
+# Quick preset: 720p to native with FSR
+magpie-linux --720p ./game
+
+# Custom: 720p to 1440p with FSR
+magpie-linux -i 1280x720 -o 2560x1440 -s fsr ./game
+
+# 4K Quality preset with MangoHud
+magpie-linux --4k-quality --mangohud steam steam://rungameid/12345
+
+# NIS scaler instead of FSR
+magpie-linux -s nis --720p ./game
 ```
 
-**Options:**
-- `-i INPUT` — Input file (required)
-- `-o OUTPUT` — Output file (required)
-- `-j JOBS` — Number of parallel jobs (default: number of GPUs)
-- `-c h264|hevc` — Codec (default: h264)
-- `-b BITRATE` — Bitrate (default: 2000k)
+### CPU Pinning
 
-**Example:**
 ```bash
-gpu-parallel-ffmpeg -i movie.mp4 -o encoded.mp4 -j 2 -b 4000k
+# Performance mode (all cores except system-reserved)
+cpu-pin performance ./render-job
+
+# Gaming mode (physical cores only, no HT)
+cpu-pin gaming ./game
+
+# Render mode (all 16 threads)
+cpu-pin render blender -b scene.blend
+
+# Single high-performance core
+cpu-pin single ./single-threaded-app
+
+# Balanced (half capacity)
+cpu-pin balanced ./background-task
 ```
 
-### system-tune — System Performance Tuning
+### Power Profiles
 
 ```bash
-sudo system-tune
+# Maximum performance
+sudo power-profile performance
+
+# Gaming (performance + low latency)
+sudo power-profile gaming
+
+# Daily use / balanced
+sudo power-profile balanced
+
+# Power saving
+sudo power-profile powersave
+
+# Check current state
+power-profile status
 ```
 
-**Profiles:**
-1. Maximum Performance (Gaming/Heavy Workloads)
-2. Balanced Mode (Default)
-3. Power Saving Mode
-4. Reset to Defaults
-5. Show Current Settings
+### Resource Control
 
----
-
-## Monitoring
-
-### GPU Diagnostics
 ```bash
-gpu-check
+# Run game in high-priority slice
+highperf-run ./game
+
+# Run backup in background slice
+background-run rsync -av /home /backup
+
+# Gaming slice (systemd scope)
+gaming-run steam
 ```
 
-Shows:
-- PCI device detection
-- Loaded kernel modules
-- OpenGL and Vulkan info
-- NVIDIA status (nvidia-smi)
-- AMD status (radeontop/vainfo)
-- Power management status
-- PRIME configuration
+### LSFG Frame Generation
 
-### Real-Time GPU Monitoring
 ```bash
-gpu-balance
-```
+# Run with LSFG (requires Lossless Scaling assets)
+lsfg-run ./game
 
-Interactive monitor showing:
-- NVIDIA memory/utilization/temperature
-- AMD GPU status
-- Workload recommendations
-
-### Additional Tools
-```bash
-nvidia-smi               # NVIDIA status
-radeontop                # AMD GPU usage
-vulkaninfo               # Vulkan device enumeration
-vainfo                   # VA-API status
-glxinfo | grep -i vendor # OpenGL vendor
+# Or with environment variable
+LSFG_ASSETS="/path/to/Lossless Scaling" lsfg-run ./game
 ```
 
 ---
 
 ## Configuration Files Created
 
-| File | Purpose |
-|------|--------|
-| `/etc/modprobe.d/50-nvidia.conf` | NVIDIA kernel module options (DPM, modeset) |
-| `/etc/X11/xorg.conf.d/10-prime-offload.conf` | Xorg PRIME Render Offload config |
-| `/etc/profile.d/gpu_config.sh` | Global GPU environment variables |
-| `/etc/profile.d/gpu_wayland.sh` | Wayland GPU configuration |
-| `/etc/sysctl.d/98-gpu-optimization.conf` | Kernel parameter tuning |
-| `/etc/udev/rules.d/99-gpu-power.rules` | GPU runtime power management |
+### Kernel Parameters (sysctl)
+
+| Location | Purpose |
+|----------|---------|
+| `/etc/sysctl.d/60-cpu-scheduler.conf` | Kernel scheduler tuning |
+| `/etc/sysctl.d/60-cpu-topology.conf` | CPU topology and NUMA |
+| `/etc/sysctl.d/60-memory-optimization.conf` | Memory management |
+| `/etc/sysctl.d/60-network-optimization.conf` | Basic network tuning |
+| `/etc/sysctl.d/60-network-advanced.conf` | Advanced network tuning |
+
+### GPU Configuration
+
+| Location | Purpose |
+|----------|---------|
+| `/etc/modprobe.d/amdgpu.conf` | AMD GPU driver options |
+| `/etc/modprobe.d/amdgpu-enhanced.conf` | Enhanced AMD options |
+| `/etc/modprobe.d/nvidia.conf` | NVIDIA driver options |
+| `/etc/profile.d/amd-gpu.sh` | AMD environment variables |
+| `/etc/profile.d/nvidia-gpu.sh` | NVIDIA environment variables |
+| `/etc/profile.d/vulkan-multigpu.sh` | Vulkan multi-GPU config |
+| `/etc/profile.d/magpie-aliases.sh` | Upscaling aliases |
+| `/etc/dxvk.conf` | DXVK global configuration |
+
+### systemd Configuration
+
+| Location | Purpose |
+|----------|---------|
+| `/etc/systemd/zram-generator.conf` | ZRAM swap configuration |
+| `/etc/systemd/system/gaming.slice` | Gaming applications slice |
+| `/etc/systemd/system/highperf.slice` | High-performance slice |
+| `/etc/systemd/system/background.slice` | Background tasks slice |
+| `/etc/systemd/system/user@.service.d/resource-control.conf` | User session limits |
+| `/etc/systemd/system.conf.d/cpu-affinity.conf` | System CPU affinity |
+| `/etc/systemd/system.conf.d/cpu-topology.conf` | CPU topology |
+| `/etc/systemd/system.conf.d/cgroups.conf` | cgroups accounting |
+| `/etc/systemd/system/power-profile-boot.service` | Boot power profile |
+
+### udev Rules
+
+| Location | Purpose |
+|----------|---------|
+| `/etc/udev/rules.d/60-io-scheduler.rules` | I/O scheduler rules |
+| `/etc/udev/rules.d/60-readahead.rules` | Read-ahead tuning |
+| `/etc/udev/rules.d/60-usb-power.rules` | USB power management |
+| `/etc/udev/rules.d/60-pcie-pm.rules` | PCIe power management |
+| `/etc/udev/rules.d/60-network-tuning.rules` | Network interface tuning |
+| `/etc/udev/rules.d/80-amdgpu-power.rules` | AMD GPU power management |
+
+### Other
+
+| Location | Purpose |
+|----------|---------|
+| `/etc/tuned/gaming-optimized/tuned.conf` | Custom tuned profile |
+| `/etc/default/earlyoom` | EarlyOOM configuration |
+| `/etc/sysconfig/irqbalance` | IRQ balance configuration |
+| `/etc/tmpfiles.d/thp.conf` | THP persistent config |
+| `/usr/share/vulkan/implicit_layer.d/lsfg_vk.json` | LSFG Vulkan layer |
 
 ---
 
-## Gaming
+## Rollback
 
-### Steam
+All changes can be reverted:
+
 ```bash
-smart-run --nvidia steam
-
-# Or add to game launch options:
-__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia %command%
+# Restore from backup
+sudo /var/backup/fedora-optimizer/restore.sh
+sudo reboot
 ```
 
-### Lutris / Heroic
-```bash
-smart-run --nvidia lutris
-smart-run --nvidia heroic
-```
-
-### GameMode
-GameMode is automatically installed and enabled. It switches to performance mode when games launch.
+Backup location: `/var/backup/fedora-optimizer/`
 
 ---
 
-## Video Encoding
+## Verification
 
-### NVIDIA NVENC
 ```bash
-smart-run --nvidia ffmpeg -i input.mp4 -c:v h264_nvenc -preset slow output.mp4
-```
+# Comprehensive verification report
+verify-optimization
 
-### AMD VAAPI
-```bash
-ffmpeg -vaapi_device /dev/dri/renderD128 -i input.mp4 \
-  -vf 'format=nv12,hwupload' -c:v h264_vaapi output.mp4
-```
+# Quick system status
+system-status
 
-### Parallel Encoding (Both GPUs)
-```bash
-gpu-parallel-ffmpeg -i input.mp4 -o output.mp4 -j 2
+# Individual checks
+cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+cat /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference
+sysctl vm.swappiness
+sysctl net.ipv4.tcp_congestion_control
+nvidia-smi
+zramctl
+tuned-adm active
 ```
 
 ---
 
 ## Troubleshooting
 
-### NVIDIA Not Working
+### NVIDIA Driver Issues
+
 ```bash
-# Check driver
+# Check driver status
 lsmod | grep nvidia
 nvidia-smi
 
@@ -262,76 +441,116 @@ sudo akmods --force
 
 # Check logs
 journalctl -b | grep nvidia
+
+# Verify PRIME offload
+__NV_PRIME_RENDER_OFFLOAD=1 glxinfo | grep "OpenGL renderer"
 ```
 
-### AMD Not Detected
+### AMD GPU Issues
+
 ```bash
 lsmod | grep amdgpu
-lspci | grep -E "VGA|3D"
 vainfo
+vulkaninfo --summary
+
+# Check power level
+cat /sys/class/drm/card*/device/power_dpm_force_performance_level
 ```
 
-### Black Screen After Reboot
+### Performance Not Improved
+
 ```bash
-# Boot to rescue mode, then:
-sudo rm /etc/X11/xorg.conf.d/10-prime-offload.conf
+# Verify tuned profile is active
+tuned-adm active
+
+# Check if BBR is enabled
+sysctl net.ipv4.tcp_congestion_control
+
+# Verify ZRAM is active
+zramctl
+
+# Check CPU governor and EPP
+cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+cat /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference
+
+# Verify scheduler tuning
+sysctl kernel.sched_autogroup_enabled
+```
+
+### Multi-GPU Issues
+
+```bash
+# List Vulkan devices
+vulkaninfo --summary
+
+# Check ICD files
+ls -la /usr/share/vulkan/icd.d/
+
+# Test specific GPU
+gpu-select amd vulkaninfo --summary
+gpu-select nvidia vulkaninfo --summary
+```
+
+### Reset Everything
+
+```bash
+sudo /var/backup/fedora-optimizer/restore.sh
 sudo reboot
 ```
 
-### Reset Configuration
-```bash
-sudo rm /etc/X11/xorg.conf.d/10-prime-offload.conf
-sudo rm /etc/modprobe.d/50-nvidia.conf
-sudo rm /etc/profile.d/gpu_*.sh
-sudo rm /etc/sysctl.d/98-gpu-optimization.conf
-sudo rm /etc/udev/rules.d/99-gpu-power.rules
-sudo reboot
-```
+---
+
+## What Gets Installed
+
+### Packages
+
+- **CPU/Power**: tuned, tuned-utils, powertop, thermald, kernel-tools, hwloc, cpuid
+- **GPU AMD**: mesa-vulkan-drivers, mesa-va-drivers, mesa-vdpau-drivers, libva-utils, vulkan-tools, radeontop
+- **GPU NVIDIA**: akmod-nvidia, xorg-x11-drv-nvidia-cuda, nvidia-vaapi-driver, nvtop
+- **Memory**: zram-generator, earlyoom, numactl, preload
+- **Network**: irqbalance, ethtool, iperf3, iproute-tc
+- **Gaming**: gamemode, gamescope, mangohud, libdecor
+- **Build Tools**: git, cmake, ninja-build, vulkan-headers, various -devel packages
+- **Monitoring**: htop, btop, iotop, glxinfo, vulkan-caps-viewer
+- **Codecs**: ffmpeg, gstreamer1-plugins-bad-free, gstreamer1-plugins-good, gstreamer1-plugins-ugly, gstreamer1-plugin-libav
 
 ---
 
-## What Gets Configured
+## Safety and Stability
 
-- ✓ PRIME Render Offload + Vulkan multi-ICD hints
-- ✓ Intelligent helper scripts (smart-run, gpu-coop, gpu-parallel-ffmpeg)
-- ✓ Automatic driver installation (NVIDIA akmod, AMD Mesa)
-- ✓ NVIDIA persistence daemon and modprobe options
-- ✓ GPU runtime power management (autosuspend)
-- ✓ CPU frequency scaling (performance governor)
-- ✓ I/O scheduler optimization (mq-deadline/kyber)
-- ✓ Memory and swap tuning
-- ✓ GameMode for automatic gaming profiles
-- ✓ Multimedia codecs (GStreamer, FFmpeg)
-- ✓ VA-API and Vulkan acceleration
-- ✓ TLP power management daemon
+- **Safe Defaults**: All settings are conservative and well-tested
+- **Reversible**: Full backup created before any changes
+- **No Kernel Patches**: Uses standard kernel features only
+- **Update Safe**: Will not break system updates
+- **Idempotent**: Safe to run multiple times
+- **Error Handling**: Script uses `set -euo pipefail` for safety
 
 ---
 
-## Logs
+## Logs and Backup
 
-Full installation log: `/var/log/dual-gpu-setup.log`
-
----
-
-## FAQ
-
-**Can both GPUs run simultaneously?**
-Yes. AMD handles display while NVIDIA processes compute tasks via PRIME offload.
-
-**Does this work on Wayland?**
-Yes. The script configures environment variables for both X11 and Wayland.
-
-**How much power is saved?**
-NVIDIA suspends when idle (0W), saving ~75W compared to always-on.
-
-**Can I connect monitors to NVIDIA?**
-Not recommended. Use AMD for display output for best power efficiency.
+- **Installation Log**: `/var/log/fedora-optimizer.log`
+- **Backup Location**: `/var/backup/fedora-optimizer/`
+- **CPU Topology Map**: `/var/log/cpu-topology.txt` (if hwloc installed)
 
 ---
 
-## Resources
+## Expected Results
 
-- Installation Log: `/var/log/dual-gpu-setup.log`
-- Xorg Logs: `/var/log/Xorg.0.log`
-- NVIDIA Logs: `journalctl -b | grep nvidia`
-- Fedora Forums: https://discussion.fedoraproject.org/
+After running and rebooting:
+
+- Faster application launches (preload + optimized caching)
+- Smoother gaming with proper GPU selection and FSR upscaling
+- Better multitasking under heavy load (cgroups + scheduler tuning)
+- Lower idle power consumption (ASPM + runtime PM)
+- Improved network throughput (BBR + buffer tuning)
+- Faster storage I/O (appropriate schedulers + TRIM)
+- Quieter operation when idle (dynamic power management)
+- Frame generation capability (LSFG-VK)
+- Magpie-like upscaling on Linux (Gamescope + FSR/NIS)
+
+---
+
+## License
+
+MIT License
