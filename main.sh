@@ -207,7 +207,6 @@ install_packages() {
         libva-utils
         vulkan-tools
         radeontop
-        libva-vdpau-driver
         
         # GPU - NVIDIA (General utils)
         vulkan-loader
@@ -250,7 +249,6 @@ install_packages() {
         nvtop
         iotop
         glxinfo
-        vulkan-caps-viewer
         
         # Multimedia codecs
         gstreamer1-plugins-bad-free
@@ -342,7 +340,10 @@ install_lsfg_vk() {
     # Install manually since it's a layer
     log "Installing LSFG-VK layer..."
     mkdir -p /usr/local/lib/lsfg-vk
-    cp lsfg_vk.so /usr/local/lib/lsfg-vk/
+    cp lsfg-vk-layer/liblsfg-vk-layer.so /usr/local/lib/lsfg-vk/
+    
+    # Also install the CLI tool
+    cp lsfg-vk-cli/lsfg-vk-cli /usr/local/bin/ 2>/dev/null || true
     
     # Configure JSON manifest
     mkdir -p /usr/share/vulkan/implicit_layer.d
@@ -353,7 +354,7 @@ install_lsfg_vk() {
         "name": "VK_LAYER_LSFG_frame_generation",
         "type": "GLOBAL",
         "api_version": "1.3.0",
-        "library_path": "/usr/local/lib/lsfg-vk/lsfg_vk.so",
+        "library_path": "/usr/local/lib/lsfg-vk/liblsfg-vk-layer.so",
         "implementation_version": "1",
         "description": "LSFG Frame Generation Layer",
         "enable_environment": {
@@ -412,24 +413,12 @@ optimize_cpu() {
         warn "Hyper-Threading not detected in /proc/cpuinfo."
     fi
 
-    # 2. Configure Intel P-state driver
+    # 2. Intel P-state configuration (via tuned profile - not immediate)
+    # NOTE: Not changing CPU governor/EPP immediately - can cause black screen
+    # These will be managed by the tuned profile on next boot
     if [[ -d /sys/devices/system/cpu/intel_pstate ]]; then
-        log "Configuring Intel P-state..."
-        
-        # Use powersave governor with intel_pstate (acts like schedutil)
-        echo "powersave" | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor >/dev/null
-        
-        # Set energy performance preference to balance_performance
-        if [[ -f /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference ]]; then
-            echo "balance_performance" | tee /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference >/dev/null
-            success "EPP set to balance_performance"
-        fi
-        
-        # Enable turbo boost
-        if [[ -f /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
-            echo 0 > /sys/devices/system/cpu/intel_pstate/no_turbo
-            success "Intel Turbo Boost enabled"
-        fi
+        log "Intel P-state detected - will be configured via tuned profile"
+        log "Current governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo 'unknown')"
     fi
     
     # 3. Kernel scheduler optimizations
@@ -465,7 +454,8 @@ EOF
     # 4. IRQ Balancing and Affinity
     log "Configuring IRQ balancing..."
     if systemctl list-unit-files | grep -q irqbalance; then
-        systemctl enable --now irqbalance 2>/dev/null || true
+        # NOTE: Not starting immediately - will start after reboot
+        systemctl enable irqbalance 2>/dev/null || true
         # Ensure it doesn't balance across SMT siblings if possible
         mkdir -p /etc/sysconfig
         cat > /etc/sysconfig/irqbalance << 'EOF'
@@ -490,14 +480,15 @@ case "$1" in
 esac
 IRQPOLICY
         chmod +x /usr/local/bin/irqbalance-policy.sh
-        systemctl restart irqbalance 2>/dev/null || true
-        success "IRQ balancing configured with custom policy"
+        # NOTE: Not restarting immediately - will apply after reboot
+        success "IRQ balancing configured (will apply after reboot)"
     fi
 
     # 5. Configure thermald for Intel
     if systemctl list-unit-files | grep -q thermald; then
-        systemctl enable --now thermald 2>/dev/null || true
-        success "thermald enabled"
+        # NOTE: Not starting immediately - will start after reboot
+        systemctl enable thermald 2>/dev/null || true
+        success "thermald enabled (will start after reboot)"
     fi
     
     # 6. Configure tuned profile
@@ -531,12 +522,13 @@ kernel.sched_migration_cost_ns=5000000
 [scheduler]
 sched_autogroup_enabled=1
 EOF
-        tuned-adm profile gaming-optimized 2>/dev/null || tuned-adm profile throughput-performance
-        success "tuned profile configured"
+        # Don't activate tuned profile immediately - can cause issues
+        # tuned-adm profile gaming-optimized 2>/dev/null || tuned-adm profile throughput-performance
+        success "tuned profile created (activate after reboot with: tuned-adm profile gaming-optimized)"
     fi
     
     # 7. CPU affinity optimization for system services
-    log "Optimizing CPU affinity for system services..."
+    log "Creating CPU affinity config for system services..."
     # Reserve CPU 0-1 for system, rest for user applications
     mkdir -p /etc/systemd/system.conf.d
     cat > /etc/systemd/system.conf.d/cpu-affinity.conf << 'EOF'
@@ -545,10 +537,9 @@ EOF
 CPUAffinity=0 1
 EOF
     
-    systemctl daemon-reload
-    
-    sysctl --system >/dev/null 2>&1
-    success "CPU optimization complete"
+    # NOTE: Not running daemon-reload or sysctl --system immediately
+    # These changes will take effect after reboot
+    success "CPU optimization configs created (will apply after reboot)"
 }
 
 #-------------------------------------------------------------------------------
@@ -613,9 +604,8 @@ DefaultMemoryAccounting=yes
 DefaultIOAccounting=yes
 EOF
 
-    # Reload systemd
-    systemctl daemon-reload
-    success "Systemd slice weights and cgroups optimized (User > Gaming > System)"
+    # NOTE: Not reloading systemd immediately - will apply after reboot
+    success "Systemd slice configs created (will apply after reboot)"
 }
 
 #-------------------------------------------------------------------------------
@@ -684,9 +674,8 @@ w /sys/kernel/mm/transparent_hugepage/khugepaged/alloc_sleep_millisecs - - - - 6
 w /sys/kernel/mm/transparent_hugepage/khugepaged/scan_sleep_millisecs - - - - 10000
 EOF
     
-    # Apply immediately
-    echo madvise > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
-    echo madvise > /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null || true
+    # NOTE: Not applying THP changes immediately - will apply after reboot
+    # These changes can cause issues on some systems if applied live
     
     # 3. Configure ZRAM (compressed RAM swap)
     log "Configuring ZRAM..."
@@ -701,11 +690,10 @@ fs-type = swap
 mount-point = /dev/zram0
 EOF
     
-    # Enable zram service
-    systemctl daemon-reload
-    systemctl enable --now systemd-zram-setup@zram0.service 2>/dev/null || true
+    # Enable zram service (will start after reboot)
+    systemctl enable systemd-zram-setup@zram0.service 2>/dev/null || true
     
-    success "ZRAM configured (16GB with zstd compression)"
+    success "ZRAM configured (will activate after reboot)"
     
     # 4. Configure EarlyOOM (Out-of-Memory killer)
     log "Configuring EarlyOOM..."
@@ -716,22 +704,22 @@ EOF
 # Kill processes when memory drops below 5% or swap below 10%
 EARLYOOM_ARGS="-m 5 -s 10 -r 60 --avoid '(^|/)(init|systemd|Xorg|gnome-shell|plasmashell|sddm|gdm|lightdm)$' --prefer '(^|/)(Web Content|firefox|chrome|electron)' -n"
 EOF
-        systemctl enable --now earlyoom 2>/dev/null || true
-        success "EarlyOOM configured and enabled"
+        systemctl enable earlyoom 2>/dev/null || true
+        success "EarlyOOM configured (will start after reboot)"
     fi
     
     # 5. Configure preload for faster application launches (optional)
     if command -v preload &>/dev/null || dnf list installed preload &>/dev/null; then
         log "Configuring preload for predictive caching..."
-        systemctl enable --now preload 2>/dev/null || true
+        systemctl enable preload 2>/dev/null || true
     else
         log "Installing preload for predictive caching..."
         dnf install -y preload 2>/dev/null || true
-        systemctl enable --now preload 2>/dev/null || true
+        systemctl enable preload 2>/dev/null || true
     fi
     
-    sysctl --system >/dev/null 2>&1
-    success "Memory optimization complete"
+    # NOTE: Not applying sysctl immediately - will apply after reboot
+    success "Memory optimization configs created (will apply after reboot)"
 }
 
 #-------------------------------------------------------------------------------
@@ -742,14 +730,14 @@ optimize_gpu_amd() {
     
     header "AMD GPU Optimization (RX 6400 XT)"
     
-    # 1. AMDGPU kernel parameters
+    # 1. AMDGPU kernel parameters (conservative - safe defaults)
     log "Configuring AMDGPU driver..."
     cat > /etc/modprobe.d/amdgpu.conf << 'EOF'
-options amdgpu deep_color=1
-options amdgpu ppfeaturemask=0xffffffff
+# Safe AMD GPU configuration
 options amdgpu dc=1
 options amdgpu dpm=1
-options amdgpu bapm=1
+# ppfeaturemask commented out - can cause instability
+# options amdgpu ppfeaturemask=0xffffffff
 EOF
     
     # 2. Udev rules for power management and device access
@@ -781,30 +769,31 @@ optimize_gpu_nvidia() {
     
     header "NVIDIA GPU Optimization (GTX 1650)"
     
-    # 1. NVIDIA kernel module options
+    # 1. NVIDIA kernel module options (conservative - safe defaults)
     cat > /etc/modprobe.d/nvidia.conf << 'EOF'
-options nvidia NVreg_DynamicPowerManagement=0x02
+# Safe NVIDIA GPU configuration
 options nvidia-drm modeset=1
-options nvidia-drm fbdev=1
+# fbdev can cause black screen on some systems - disabled by default
+# options nvidia-drm fbdev=1
 options nvidia NVreg_UsePageAttributeTable=1
-options nvidia NVreg_InitializeSystemMemoryAllocations=0
-options nvidia NVreg_EnableResizableBar=1
+# Dynamic power management disabled - can cause black screen
+# options nvidia NVreg_DynamicPowerManagement=0x02
 EOF
     
     # 2. Enable NVIDIA services for persistence and power management
-    log "Enabling NVIDIA services..."
-    systemctl enable --now nvidia-persistenced 2>/dev/null || true
-    systemctl enable --now nvidia-powerd 2>/dev/null || true
-    systemctl enable --now nvidia-hibernate 2>/dev/null || true
-    systemctl enable --now nvidia-resume 2>/dev/null || true
-    systemctl enable --now nvidia-suspend 2>/dev/null || true
+    # NOTE: Not starting immediately (--now removed) - will start after reboot
+    log "Enabling NVIDIA services (will start after reboot)..."
+    systemctl enable nvidia-persistenced 2>/dev/null || true
+    systemctl enable nvidia-powerd 2>/dev/null || true
+    systemctl enable nvidia-hibernate 2>/dev/null || true
+    systemctl enable nvidia-resume 2>/dev/null || true
+    systemctl enable nvidia-suspend 2>/dev/null || true
 
-    # 3. Configure PRIME Offload environment
+    # 3. Configure PRIME Offload environment (aliases only - not global exports)
     cat > /etc/profile.d/nvidia-gpu.sh << 'EOF'
-# NVIDIA PRIME Offload Variables
-export __NV_PRIME_RENDER_OFFLOAD=1
-export __GLX_VENDOR_LIBRARY_NAME=nvidia
-export __VK_LAYER_NV_optimus=NVIDIA_only
+# NVIDIA PRIME Offload - use prime-run command instead of global exports
+# Global exports removed - they can break AMD primary display
+alias prime-run='__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia'
 EOF
 
     success "NVIDIA GPU optimization complete"
@@ -950,31 +939,36 @@ net.ipv4.ip_local_port_range = 1024 65535
 EOF
     
     # 2. Enable irqbalance with specific tuning for i9-9900 (8c/16t)
-    if systemctl list-unit-files | grep -q irqbalance; then
-        systemctl enable --now irqbalance 2>/dev/null || true
-        success "IRQ balancing enabled and tuned"
+    if systemctl list-unit-files irqbalance.service &>/dev/null; then
+        # NOTE: Not starting immediately - will start after reboot
+        systemctl enable irqbalance 2>/dev/null || true
+        success "IRQ balancing enabled (will start after reboot)"
     fi
     
     # 3. NIC offloading and Ring Buffer Optimization
     if command -v ethtool &>/dev/null; then
-        local primary_nic
-        primary_nic=$(ip route | grep default | awk '{print $5}' | head -1)
-        if [[ -n "$primary_nic" ]]; then
+        local primary_nic=""
+        primary_nic=$(ip route 2>/dev/null | grep default | awk '{print $5}' | head -1 || echo "")
+        if [[ -n "${primary_nic:-}" ]]; then
             log "Tuning NIC: $primary_nic"
-            # Enable hardware offloading
-            ethtool -K "$primary_nic" tx on rx on tso on gso on gro on lro off 2>/dev/null || true
-            # Increase ring buffers to max if possible
-            local max_rx
-            max_rx=$(ethtool -g "$primary_nic" 2>/dev/null | grep -A 5 "Pre-set" | grep "RX:" | awk '{print $2}')
-            if [[ -n "$max_rx" && "$max_rx" -gt 0 ]]; then
-                ethtool -G "$primary_nic" rx "$max_rx" 2>/dev/null || true
+            # Enable hardware offloading (may fail on wireless NICs - that's OK)
+            # Use subshell to isolate pipefail effects
+            ( timeout 5 ethtool -K "$primary_nic" tx on rx on tso on gso on gro on lro off ) &>/dev/null || true
+            # Increase ring buffers to max if possible (not supported on all NICs)
+            local max_rx=""
+            max_rx=$(set +o pipefail; timeout 5 ethtool -g "$primary_nic" 2>/dev/null | grep -A 5 "Pre-set" | grep "RX:" | awk '{print $2}' || echo "")
+            # Only proceed if max_rx is a valid number (not 'n/a' or empty)
+            if [[ -n "${max_rx:-}" ]] && [[ "${max_rx}" =~ ^[0-9]+$ ]] && [[ "${max_rx}" -gt 0 ]]; then
+                ( timeout 5 ethtool -G "$primary_nic" rx "$max_rx" ) &>/dev/null || true
             fi
-            success "NIC offloading and buffers optimized: $primary_nic"
+            success "NIC config created: $primary_nic"
+        else
+            warn "No primary NIC detected, skipping NIC tuning"
         fi
     fi
     
-    sysctl --system >/dev/null 2>&1
-    success "Network optimization complete"
+    # NOTE: Not applying sysctl immediately - will apply after reboot
+    success "Network optimization configs created (will apply after reboot)"
 }
 
 #-------------------------------------------------------------------------------
@@ -989,8 +983,8 @@ ACTION=="add|change", KERNEL=="sd[a-z]", ATTR{queue/rotational}=="0", ATTR{queue
 ACTION=="add|change", KERNEL=="sd[a-z]", ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="bfq"
 EOF
     
-    # Enable fstrim
-    systemctl enable --now fstrim.timer 2>/dev/null || true
+    # Enable fstrim (will start after reboot)
+    systemctl enable fstrim.timer 2>/dev/null || true
     
     # Read-ahead
     cat > /etc/udev/rules.d/60-readahead.rules << 'EOF'
@@ -1007,10 +1001,10 @@ optimize_power() {
     header "Power Management (Efficiency Focus)"
     
     # 1. PCIe ASPM (Active State Power Management)
+    # NOTE: Changing ASPM can cause black screens on some hardware
+    # Keeping default policy for safety
     if [[ -f /sys/module/pcie_aspm/parameters/policy ]]; then
-        # Use 'powersave' for best efficiency, or 'performance' for lowest latency.
-        # 'default' is usually a safe middle ground, but 'powersave' is better for draw.
-        echo "powersave" > /sys/module/pcie_aspm/parameters/policy 2>/dev/null || true
+        log "PCIe ASPM policy: $(cat /sys/module/pcie_aspm/parameters/policy) (not changing for safety)"
     fi
     
     # 2. USB autosuspend rules
@@ -1022,15 +1016,13 @@ ACTION=="add", SUBSYSTEM=="usb", ATTR{bInterfaceClass}=="03", ATTR{power/control
 EOF
 
     # 3. SATA/AHCI Link Power Management
-    for host in /sys/class/scsi_host/host*/link_power_management_policy; do
-        [[ -f "$host" ]] && echo "med_power_with_dipm" > "$host" 2>/dev/null || true
-    done
+    # NOTE: Not changing SATA power immediately - can cause issues
+    # Will be managed by tuned profile after reboot
+    log "SATA power management will be configured via tuned profile"
 
     # 4. Intel Audio Power Saving
-    if [[ -f /sys/module/snd_hda_intel/parameters/power_save ]]; then
-        echo "1" > /sys/module/snd_hda_intel/parameters/power_save
-        echo "Y" > /sys/module/snd_hda_intel/parameters/power_save_controller
-    fi
+    # NOTE: Not changing audio power immediately - can cause audio issues
+    log "Audio power saving will be configured after reboot"
 
     # 5. Runtime Power Management for PCI devices
     cat > /etc/udev/rules.d/60-pcie-pm.rules << 'EOF'
@@ -1049,15 +1041,32 @@ configure_grub() {
     
     cp /etc/default/grub /etc/default/grub.backup.$(date +%Y%m%d) 2>/dev/null || true
     
+    # Conservative kernel parameters - avoiding ones that can cause black screens
     local new_params=""
-    [[ "$HAS_NVIDIA_GPU" == "true" ]] && new_params+=" nvidia-drm.modeset=1 nvidia-drm.fbdev=1"
-    [[ "$HAS_AMD_GPU" == "true" ]] && new_params+=" amdgpu.ppfeaturemask=0xffffffff"
-    new_params+=" mitigations=auto nowatchdog nmi_watchdog=0 transparent_hugepage=madvise intel_pstate=passive"
-    new_params+=" intel_iommu=on iommu=pt"
-    new_params+=" skew_tick=1"
+    [[ "$HAS_NVIDIA_GPU" == "true" ]] && new_params+=" nvidia-drm.modeset=1"
+    # NOTE: Removed aggressive params that can cause instability:
+    # - nvidia-drm.fbdev=1 (can cause black screen)
+    # - amdgpu.ppfeaturemask=0xffffffff (can cause instability)
+    # - intel_pstate=passive (can cause issues)
+    # - intel_iommu=on iommu=pt (can break some hardware)
+    new_params+=" mitigations=auto transparent_hugepage=madvise"
     
-    local current_params
-    current_params=$(grep "^GRUB_CMDLINE_LINUX_DEFAULT" /etc/default/grub | cut -d'"' -f2)
+    # Determine which GRUB variable to use (some systems use GRUB_CMDLINE_LINUX, others use GRUB_CMDLINE_LINUX_DEFAULT)
+    local grub_var=""
+    local current_params=""
+    
+    if grep -q "^GRUB_CMDLINE_LINUX_DEFAULT" /etc/default/grub 2>/dev/null; then
+        grub_var="GRUB_CMDLINE_LINUX_DEFAULT"
+        current_params=$(grep "^GRUB_CMDLINE_LINUX_DEFAULT" /etc/default/grub | cut -d'"' -f2 || echo "")
+    elif grep -q "^GRUB_CMDLINE_LINUX" /etc/default/grub 2>/dev/null; then
+        grub_var="GRUB_CMDLINE_LINUX"
+        current_params=$(grep "^GRUB_CMDLINE_LINUX=" /etc/default/grub | cut -d'"' -f2 || echo "")
+    else
+        warn "No GRUB_CMDLINE found in /etc/default/grub, skipping"
+        return
+    fi
+    
+    log "Using $grub_var for kernel parameters"
     
     for param in $new_params; do
         if ! echo "$current_params" | grep -q "${param%%=*}"; then
@@ -1065,15 +1074,13 @@ configure_grub() {
         fi
     done
     
-    sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$current_params\"|" /etc/default/grub
+    sed -i "s|^${grub_var}=.*|${grub_var}=\"$current_params\"|" /etc/default/grub
     
-    if [[ -d /sys/firmware/efi ]]; then
-        grub2-mkconfig -o /boot/efi/EFI/fedora/grub.cfg 2>/dev/null || true
-    else
-        grub2-mkconfig -o /boot/grub2/grub.cfg 2>/dev/null || true
-    fi
+    # DO NOT auto-regenerate GRUB - let user do it manually after review
+    warn "GRUB config updated but NOT regenerated for safety."
+    warn "Review /etc/default/grub and run: sudo grub2-mkconfig -o /boot/grub2/grub.cfg"
     
-    success "GRUB parameters configured"
+    success "GRUB parameters configured (manual regeneration required)"
 }
 
 #-------------------------------------------------------------------------------
@@ -1084,12 +1091,13 @@ enhance_amd_gpu() {
     
     log "Enhancing AMD GPU configuration..."
     
-    # Enhanced AMD GPU parameters
+    # Enhanced AMD GPU parameters (conservative)
     cat > /etc/modprobe.d/amdgpu-enhanced.conf << 'EOF'
 # Enhanced AMD RX 6400 XT (RDNA2) Configuration
 options amdgpu gpu_recovery=1
-options amdgpu aspm=1
-options amdgpu runpm=1
+# aspm and runpm disabled - can cause black screens
+# options amdgpu aspm=1
+# options amdgpu runpm=1
 EOF
     
     # Enhanced udev rules for user access
@@ -1100,14 +1108,15 @@ KERNEL=="card[0-9]*", SUBSYSTEM=="drm", DRIVERS=="amdgpu", RUN+="/bin/chmod 0666
 KERNEL=="card[0-9]*", SUBSYSTEM=="drm", DRIVERS=="amdgpu", RUN+="/bin/chmod 0666 /sys/class/drm/%k/device/pp_power_profile_mode"
 EOF
     
-    # Enhanced environment variables
+    # Enhanced environment variables (conservative - removed aggressive options)
     cat >> /etc/profile.d/amd-gpu.sh << 'EOF'
 
-# Enhanced RDNA2 Optimization
-export RADV_PERFTEST=aco,gpl,nggc,sam
-export RADV_DEBUG=zerovram
-export AMD_DEBUG=nodma,nofmask
-export RADV_FORCE_FAMILY=navi23
+# RDNA2 Optimization (safe defaults)
+export RADV_PERFTEST=aco,gpl
+# Removed aggressive options that can cause issues:
+# export RADV_DEBUG=zerovram
+# export AMD_DEBUG=nodma,nofmask  
+# export RADV_FORCE_FAMILY=navi23
 EOF
 
     # Create AMD GPU control utility
@@ -1420,11 +1429,11 @@ echo "IRQ affinity optimized"
 IRQOPT
     chmod +x /usr/local/bin/optimize-irq
     
-    # Run IRQ optimization
-    /usr/local/bin/optimize-irq 2>/dev/null || true
+    # NOTE: Not running IRQ optimization immediately - can cause issues
+    # Run manually after reboot with: sudo /usr/local/bin/optimize-irq
     
-    sysctl --system >/dev/null 2>&1
-    success "CPU topology optimization complete"
+    # NOTE: Not applying sysctl immediately - will apply after reboot
+    success "CPU topology configs created (will apply after reboot)"
 }
 
 #-------------------------------------------------------------------------------
@@ -1461,13 +1470,14 @@ alias vk-all='unset VK_ICD_FILENAMES'
 export DXVK_ASYNC=1
 export DXVK_CONFIG_FILE=/etc/dxvk.conf
 
-# RADV optimizations for RDNA2
-export RADV_PERFTEST=aco,gpl,nggc,sam,rt
-export RADV_DEBUG=zerovram,nodcc
+# RADV optimizations for RDNA2 (conservative)
+export RADV_PERFTEST=aco,gpl
+# Aggressive options disabled - can cause instability
+# export RADV_DEBUG=zerovram,nodcc
 
-# VKD3D-Proton optimizations
-export VKD3D_CONFIG=dxr
-export VKD3D_FEATURE_LEVEL=12_1
+# VKD3D-Proton optimizations (conservative)
+# export VKD3D_CONFIG=dxr
+# export VKD3D_FEATURE_LEVEL=12_1
 VKENV
     chmod +x /etc/profile.d/vulkan-multigpu.sh
     
@@ -2076,10 +2086,9 @@ vm.compact_unevictable_allowed = 1
 vm.extfrag_threshold = 500
 EOF
 
-    systemctl daemon-reload
-    sysctl --system >/dev/null 2>&1
+    # NOTE: Not running daemon-reload or sysctl immediately - will apply after reboot
     
-    success "Advanced virtual resource optimization complete"
+    success "Advanced virtual resource configs created (will apply after reboot)"
 }
 
 #-------------------------------------------------------------------------------
@@ -2089,10 +2098,10 @@ optimize_network_advanced() {
     header "Advanced Network Optimization"
     
     # 1. Detect primary network interface
-    local primary_nic
-    primary_nic=$(ip route | grep default | awk '{print $5}' | head -1)
+    local primary_nic=""
+    primary_nic=$(ip route 2>/dev/null | grep default | awk '{print $5}' | head -1 || echo "")
     
-    if [[ -z "$primary_nic" ]]; then
+    if [[ -z "${primary_nic:-}" ]]; then
         warn "No primary network interface detected"
         return
     fi
@@ -2173,31 +2182,32 @@ net.ipv6.conf.default.accept_ra = 2
 EOF
 
     # 3. NIC Hardware Optimization
-    if command -v ethtool &>/dev/null; then
+    if command -v ethtool &>/dev/null && [[ -n "${primary_nic:-}" ]]; then
         log "Optimizing NIC hardware settings..."
         
-        # Enable all offloading features
-        ethtool -K "$primary_nic" tx on rx on sg on tso on gso on gro on 2>/dev/null || true
+        # Enable all offloading features (use subshell to isolate pipefail)
+        ( timeout 5 ethtool -K "$primary_nic" tx on rx on sg on tso on gso on gro on ) &>/dev/null || true
         
         # Disable LRO (can cause issues with routing/bridging)
-        ethtool -K "$primary_nic" lro off 2>/dev/null || true
+        ( timeout 5 ethtool -K "$primary_nic" lro off ) &>/dev/null || true
         
         # Enable adaptive interrupt coalescing if supported
-        ethtool -C "$primary_nic" adaptive-rx on adaptive-tx on 2>/dev/null || true
+        ( timeout 5 ethtool -C "$primary_nic" adaptive-rx on adaptive-tx on ) &>/dev/null || true
         
-        # Maximize ring buffer sizes
-        local max_rx max_tx
-        max_rx=$(ethtool -g "$primary_nic" 2>/dev/null | grep -A 5 "Pre-set" | grep "RX:" | awk '{print $2}' | head -1)
-        max_tx=$(ethtool -g "$primary_nic" 2>/dev/null | grep -A 5 "Pre-set" | grep "TX:" | awk '{print $2}' | head -1)
+        # Maximize ring buffer sizes (not supported on all NICs)
+        local max_rx="" max_tx=""
+        max_rx=$(set +o pipefail; timeout 5 ethtool -g "$primary_nic" 2>/dev/null | grep -A 5 "Pre-set" | grep "RX:" | awk '{print $2}' | head -1 || echo "")
+        max_tx=$(set +o pipefail; timeout 5 ethtool -g "$primary_nic" 2>/dev/null | grep -A 5 "Pre-set" | grep "TX:" | awk '{print $2}' | head -1 || echo "")
         
-        if [[ -n "$max_rx" ]] && [[ "$max_rx" -gt 0 ]]; then
-            ethtool -G "$primary_nic" rx "$max_rx" 2>/dev/null || true
+        # Only proceed if values are valid numbers (not 'n/a' or empty)
+        if [[ -n "${max_rx:-}" ]] && [[ "${max_rx}" =~ ^[0-9]+$ ]] && [[ "${max_rx}" -gt 0 ]]; then
+            ( timeout 5 ethtool -G "$primary_nic" rx "$max_rx" ) &>/dev/null || true
         fi
-        if [[ -n "$max_tx" ]] && [[ "$max_tx" -gt 0 ]]; then
-            ethtool -G "$primary_nic" tx "$max_tx" 2>/dev/null || true
+        if [[ -n "${max_tx:-}" ]] && [[ "${max_tx}" =~ ^[0-9]+$ ]] && [[ "${max_tx}" -gt 0 ]]; then
+            ( timeout 5 ethtool -G "$primary_nic" tx "$max_tx" ) &>/dev/null || true
         fi
         
-        success "NIC optimization applied: $primary_nic"
+        success "NIC config created: $primary_nic"
     fi
     
     # 4. Create udev rule for persistent NIC optimization
@@ -2268,11 +2278,9 @@ fi
 NETBENCH
     chmod +x /usr/local/bin/net-benchmark
     
-    sysctl --system >/dev/null 2>&1
-    udevadm control --reload-rules
-    udevadm trigger
+    # NOTE: Not applying sysctl/udev changes immediately - will apply after reboot
     
-    success "Advanced network optimization complete"
+    success "Advanced network configs created (will apply after reboot)"
 }
 
 #-------------------------------------------------------------------------------
@@ -2487,10 +2495,10 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload
+    # NOTE: Not running daemon-reload immediately
     systemctl enable power-profile-boot.service 2>/dev/null || true
     
-    success "Power profile manager installed"
+    success "Power profile manager installed (will activate after reboot)"
 }
 
 #-------------------------------------------------------------------------------
