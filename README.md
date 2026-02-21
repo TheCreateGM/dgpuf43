@@ -141,6 +141,41 @@ A comprehensive, production-ready optimization script for Fedora Linux 43, targe
 - Gaming slice with priority scheduling
 - DXVK async shader compilation
 
+### Developer Platform
+
+- **Core Toolchains**: GCC, Clang/LLVM, Rust, Go, Zig, NASM
+- **Build Systems**: CMake, Ninja, Make, Automake
+- **Scripting**: Python 3, Perl, Git with LFS support
+- **Windows Compatibility**: Wine, DXVK, VKD3D-Proton
+- **Cross-Compilation**: MinGW-w64 (32-bit and 64-bit)
+- **Debugging**: GDB, Valgrind, Strace, Ltrace, Perf
+- **Development Libraries**: Full 32-bit development stack
+
+### Virtualization & Multi-Arch
+
+- **KVM/QEMU**: Full virtualization stack with virt-manager
+- **libvirt**: Complete VM management infrastructure
+- **Nested Virtualization**: Enabled for Intel VT-x
+- **Multi-Arch Support**: Box64/Box86 for x86 emulation (if available)
+- **Binary Format Support**: binfmt_misc for cross-architecture execution
+
+### Security Hardening
+
+- **Firewall**: firewalld with home zone configuration
+- **SELinux**: Enforcing mode enabled
+- **Audit**: auditd for system auditing
+- **SSH Hardening**: Root login disabled, key-only auth, connection limits
+- **Network Security**: rp_filter, syncookies, redirect protection
+- **Service Masking**: Unnecessary services (avahi, cups, bluetooth) masked
+
+### Desktop Smoothness & UX
+
+- **GNOME Optimizations**: Reduced animations, touchpad improvements
+- **Wayland Native**: Proper environment variables for Wayland apps
+- **File Watchers**: Increased inotify limits for development
+- **Input Latency**: Reduced input latency via udev rules
+- **Display**: Triple buffering, proper video driver modesetting
+
 ---
 
 ## Installation
@@ -159,10 +194,14 @@ The script will:
 3. Enable RPM Fusion repositories
 4. Install required packages and NVIDIA drivers
 5. Build and install LSFG-VK
-6. Apply all CPU, memory, GPU, network, and storage optimizations
-7. Configure kernel boot parameters
-8. Install helper utilities
-9. Create verification tools
+6. Install developer platform (GCC, Rust, Go, Wine, MinGW)
+7. Set up virtualization stack (KVM, QEMU, virt-manager)
+8. Apply security hardening (firewall, SELinux, SSH)
+9. Apply all CPU, memory, GPU, network, and storage optimizations
+10. Configure desktop smoothness settings
+11. Configure kernel boot parameters
+12. Install helper utilities
+13. Create verification tools
 
 ### After Installation
 
@@ -199,11 +238,29 @@ system-status        # View system overview
 
 | Command | Description |
 |---------|-------------|
-| `power-profile <mode>` | Power profile switching |
-| `amd-gpu-mode <mode>` | AMD GPU power control |
-| `nvidia-gpu-mode <mode>` | NVIDIA GPU power control |
-| `optimize-irq` | Optimize IRQ affinity |
-| `nic-optimize <interface>` | Optimize network interface |
+| `power-profile <mode>` | Power profile switching (performance/balanced/powersave/gaming) |
+| `amd-gpu-mode <mode>` | AMD GPU power control (performance/power/auto/manual) |
+| `nvidia-gpu-mode <mode>` | NVIDIA GPU power control (performance/power/auto) |
+| `optimize-irq` | Optimize IRQ affinity for network/storage/GPU |
+| `nic-optimize <interface>` | Optimize network interface settings |
+| `mtu-optimize <interface>` | Auto-detect and set optimal MTU |
+| `upscale-run <scaler> <w> <h> <cmd>` | Basic Gamescope upscaling wrapper |
+
+### Developer Tools
+
+| Command | Description |
+|---------|-------------|
+| `wine` | Windows application compatibility layer |
+| `box64` | x86_64 emulation on ARM64 (if available) |
+| `virt-manager` | Virtual machine management GUI |
+
+### Security Tools
+
+| Command | Description |
+|---------|-------------|
+| `firewall-cmd` | Firewall management |
+| `ausearch` | Audit log search |
+| `getenforce` | Check SELinux status |
 
 ### Monitoring and Diagnostics
 
@@ -328,6 +385,16 @@ lsfg-run ./game
 LSFG_ASSETS="/path/to/Lossless Scaling" lsfg-run ./game
 ```
 
+### Quick Aliases
+
+```bash
+# Magpie-Linux quick presets
+fsr720 ./game      # 720p to native with FSR
+fsr900 ./game      # 900p to native with FSR  
+fsr4k ./game       # 4K balanced preset
+upscale ./game     # Custom upscale
+```
+
 ---
 
 ## Configuration Files Created
@@ -378,17 +445,42 @@ LSFG_ASSETS="/path/to/Lossless Scaling" lsfg-run ./game
 | `/etc/udev/rules.d/60-usb-power.rules` | USB power management |
 | `/etc/udev/rules.d/60-pcie-pm.rules` | PCIe power management |
 | `/etc/udev/rules.d/60-network-tuning.rules` | Network interface tuning |
+| `/etc/udev/rules.d/60-usb-autosuspend.rules` | USB autosuspend rules |
+| `/etc/udev/rules.d/60-sata-pm.rules` | SATA power management |
+| `/etc/udev/rules.d/60-pci-runtime-pm.rules` | PCI runtime power management |
+| `/etc/udev/rules.d/60-noatime.rules` | NVMe mount options |
+| `/etc/udev/rules.d/60-nvme-tuning.rules` | NVMe readahead/nr_requests |
+| `/etc/udev/rules.d/60-input-latency.rules` | Input latency reduction |
 | `/etc/udev/rules.d/80-amdgpu-power.rules` | AMD GPU power management |
+
+### Security Configuration
+
+| Location | Purpose |
+|----------|---------|
+| `/etc/sysctl.d/60-security-hardening.conf` | Network security hardening |
+| `/etc/ssh/sshd_config.d/hardening.conf` | SSH hardening overrides |
+| `/etc/selinux/config` | SELinux enforcing mode |
+| `/etc/systemd/system/powertop.service` | Powertop auto-tune service |
 
 ### Other
 
 | Location | Purpose |
 |----------|---------|
 | `/etc/tuned/gaming-optimized/tuned.conf` | Custom tuned profile |
+| `/etc/tuned/cpu-pstate.conf` | Intel P-state configuration |
 | `/etc/default/earlyoom` | EarlyOOM configuration |
 | `/etc/sysconfig/irqbalance` | IRQ balance configuration |
 | `/etc/tmpfiles.d/thp.conf` | THP persistent config |
 | `/usr/share/vulkan/implicit_layer.d/lsfg_vk.json` | LSFG Vulkan layer |
+| `/etc/security/limits.d/99-fd-limits.conf` | File descriptor limits |
+| `/etc/systemd/journald.conf.d/99-journal-size.conf` | Journal size limits |
+| `/etc/modprobe.d/kvm-intel.conf` | KVM nested virtualization |
+| `/etc/modprobe.d/nvidia-pm.conf` | NVIDIA runtime PM |
+| `/etc/modprobe.d/video.conf` | Video driver options |
+| `/etc/ssh/sshd_config.backup.*` | SSH config backup |
+| `/etc/dconf/db/local.d/compositor` | GNOME compositor settings |
+| `/etc/environment.d/99-wayland.conf` | Wayland environment |
+| `/etc/sysctl.d/60-binfmt.conf` | Binary format support |
 
 ---
 
@@ -511,8 +603,12 @@ sudo reboot
 - **Network**: irqbalance, ethtool, iperf3, iproute-tc
 - **Gaming**: gamemode, gamescope, mangohud, libdecor
 - **Build Tools**: git, cmake, ninja-build, vulkan-headers, various -devel packages
-- **Monitoring**: htop, btop, iotop, glxinfo, vulkan-caps-viewer
+- **Monitoring**: htop, btop, iotop, glxinfo
 - **Codecs**: ffmpeg, gstreamer1-plugins-bad-free, gstreamer1-plugins-good, gstreamer1-plugins-ugly, gstreamer1-plugin-libav
+- **Developer**: gcc, gcc-c++, clang, llvm, rust, cargo, go, zig, nasm, make, gdb, valgrind, strace, perf
+- **Cross-Platform**: wine, wine-common, mingw64-gcc, mingw32-gcc
+- **Virtualization**: qemu-kvm, libvirt, virt-manager, virt-install
+- **Security**: firewalld, audit, audit-libs
 
 ---
 
@@ -548,6 +644,10 @@ After running and rebooting:
 - Quieter operation when idle (dynamic power management)
 - Frame generation capability (LSFG-VK)
 - Magpie-like upscaling on Linux (Gamescope + FSR/NIS)
+- Complete development environment (GCC, Rust, Go, Wine, MinGW)
+- Virtualization ready (KVM, QEMU, virt-manager)
+- Enhanced security (firewall, SELinux, SSH hardening)
+- Improved desktop responsiveness (GNOME/Wayland optimizations)
 
 ---
 
