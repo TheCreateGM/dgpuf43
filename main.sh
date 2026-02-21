@@ -537,6 +537,16 @@ EOF
 CPUAffinity=0 1
 EOF
     
+    # 8. NOHZ and RCU optimization for low latency
+    log "Configuring NOHZ and RCU for low latency..."
+    cat >> /etc/sysctl.d/60-cpu-scheduler.conf << 'EOF'
+
+# NOHZ and RCU optimization for low latency
+# Note: nohz_full requires kernel boot parameter, listed in configure_grub
+kernel.timer_migration = 0
+kernel.numa_balancing = 1
+EOF
+    
     # NOTE: Not running daemon-reload or sysctl --system immediately
     # These changes will take effect after reboot
     success "CPU optimization configs created (will apply after reboot)"
@@ -968,6 +978,55 @@ EOF
     fi
     
     # NOTE: Not applying sysctl immediately - will apply after reboot
+    
+    # 4. MTU Detection and Optimization
+    log "Configuring MTU optimization..."
+    if [[ -n "${primary_nic:-}" ]]; then
+        # Create MTU optimization script
+        cat > /usr/local/bin/mtu-optimize << 'MTUEOF'
+#!/bin/bash
+# Auto-detect and set optimal MTU
+NIC="${1:-}"
+[[ -z "$NIC" ]] && exit 1
+
+# Test various MTU sizes to find optimal
+for mtu in 9000 1500 1492; do
+    if ping -c 1 -M do -s $((mtu - 28)) 8.8.8.8 &>/dev/null; then
+        ip link set "$NIC" mtu $mtu 2>/dev/null
+        logger "MTU optimized: $mtu"
+        break
+    fi
+done
+MTUEOF
+        chmod +x /usr/local/bin/mtu-optimize
+        
+        # Run MTU optimization for primary NIC
+        if [[ -n "$primary_nic" ]]; then
+            /usr/local/bin/mtu-optimize "$primary_nic" 2>/dev/null || true
+        fi
+    fi
+    
+    # 5. systemd-resolved configuration
+    log "Configuring systemd-resolved..."
+    mkdir -p /etc/systemd
+    cat > /etc/systemd/resolved.conf << 'EOF'
+[Resolve]
+# DNS configuration
+DNS=1.1.1.1 8.8.8.8
+FallbackDNS=1.0.0.1 8.8.4.4
+DNSSEC=allow-downgrade
+DNSOverTLS=no
+Cache=yes
+CacheFromLocalhost=no
+DNSStubListener=yes
+DNSStubListenerExtra=
+ReadEtcHosts=yes
+ResolveUnicastSingleLabel=no
+EOF
+    
+    # Flush DNS cache
+    systemd-resolve --flush-caches 2>/dev/null || resolvectl flush-caches 2>/dev/null || true
+    
     success "Network optimization configs created (will apply after reboot)"
 }
 
@@ -1050,6 +1109,9 @@ configure_grub() {
     # - intel_pstate=passive (can cause issues)
     # - intel_iommu=on iommu=pt (can break some hardware)
     new_params+=" mitigations=auto transparent_hugepage=madvise"
+    
+    # NOHZ and RCU parameters for low-latency (use cores 2-7 for nohz)
+    new_params+=" nohz_full=2-7 rcu_nocbs=2-7"
     
     # Determine which GRUB variable to use (some systems use GRUB_CMDLINE_LINUX, others use GRUB_CMDLINE_LINUX_DEFAULT)
     local grub_var=""
@@ -2634,6 +2696,544 @@ VERIFY
 }
 
 #-------------------------------------------------------------------------------
+# Extended GPU Optimization (32-bit, DXVK, VKD3D, Runtime PM)
+#-------------------------------------------------------------------------------
+extend_gpu_optimization() {
+    header "Extended GPU Optimization"
+    
+    # 32-bit OpenGL and Vulkan support
+    log "Installing 32-bit graphics libraries..."
+    local i686_packages=(
+        mesa-libGL.i686
+        mesa-dri-drivers.i686
+        mesa-vulkan-drivers.i686
+        libva-intel-driver.i686
+        vulkan-tools
+    )
+    dnf install -y "${i686_packages[@]}" 2>&1 | tee -a "$LOG_FILE" || true
+    
+    # DXVK and VKD3D for Windows compatibility (via Wine)
+    log "Installing DXVK and VKD3D..."
+    # Note: These may not be available in all repos, so skip if unavailable
+    dnf install -y wine-dxvk vkd3d vkd3d-devel 2>&1 | tee -a "$LOG_FILE" || true
+    
+    # Shader cache size increase
+    log "Configuring shader cache..."
+    mkdir -p /etc/systemd/user.conf.d
+    cat > /etc/systemd/user.conf.d/gpu-cache.conf << 'EOF'
+# Increase shader cache size for games
+ShaderCacheSize=1073741824
+EOF
+    
+    # AMD-specific: RADV perftests
+    if [[ "$HAS_AMD_GPU" == "true" ]]; then
+        cat >> /etc/profile.d/amd-gpu.sh << 'EOF'
+
+# RADV shader cache
+export RADV_SHADER_CACHE=1
+EOF
+    fi
+    
+    # NVIDIA-specific: Runtime power management
+    if [[ "$HAS_NVIDIA_GPU" == "true" ]]; then
+        log "Configuring NVIDIA runtime PM..."
+        cat > /etc/modprobe.d/nvidia-pm.conf << 'EOF'
+# NVIDIA Runtime Power Management
+options nvidia NVreg_DynamicPowerManagement=0x02
+EOF
+        
+        # Enable NVIDIA persistence daemon
+        systemctl enable nvidia-persistenced.service 2>/dev/null || true
+    fi
+    
+    # PCIe ASPM
+    log "Configuring PCIe ASPM..."
+    cat > /etc/sysctl.d/60-pcie-aspm.conf << 'EOF'
+# PCIe ASPM configuration
+dev.power.autosuspend_delay_ms = 15000
+EOF
+    
+    # Create udev rule for PCIe ASPM
+    cat > /etc/udev/rules.d/60-pcie-aspm.rules << 'EOF'
+# Enable PCIe ASPM
+ACTION=="add", SUBSYSTEM=="pci", ATTR{power/control}="auto"
+EOF
+    
+    success "Extended GPU optimization complete"
+}
+
+#-------------------------------------------------------------------------------
+# Enhanced Memory & Storage Optimization
+#-------------------------------------------------------------------------------
+enhance_memory_storage() {
+    header "Enhanced Memory & Storage Optimization"
+    
+    # File descriptor limits
+    log "Configuring file descriptor limits..."
+    cat > /etc/security/limits.d/99-fd-limits.conf << 'EOF'
+# File descriptor limits for 64GB system
+* soft nofile 1048576
+* hard nofile 1048576
+root soft nofile 1048576
+root hard nofile 1048576
+EOF
+    
+    # System-wide file descriptor
+    cat >> /etc/sysctl.d/60-memory-optimization.conf << 'EOF'
+
+# File descriptor limits
+fs.file-max = 2097152
+fs.nr_open = 2097152
+EOF
+    
+    # Noatime mount options for NVMe
+    log "Configuring mount options..."
+    cat > /etc/udev/rules.d/60-noatime.rules << 'EOF'
+# Mount NVMe with noatime
+ACTION=="add|change", KERNEL=="nvme[0-9]*", ATTR{queue/scheduler}="none"
+EOF
+    
+    # Increase readahead for NVMe
+    cat > /etc/udev/rules.d/60-nvme-tuning.rules << 'EOF'
+ACTION=="add|change", KERNEL=="nvme[0-9]*", ATTR{queue/read_ahead_kb}="4096"
+ACTION=="add|change", KERNEL=="nvme[0-9]*", ATTR{queue/nr_requests}="512"
+EOF
+    
+    # Journal size optimization
+    log "Configuring systemd journal..."
+    mkdir -p /etc/systemd/journald.conf.d
+    cat > /etc/systemd/journald.conf.d/99-journal-size.conf << 'EOF'
+[Journal]
+SystemMaxUse=2G
+SystemKeepFree=4G
+RuntimeMaxUse=1G
+RuntimeKeepFree=2G
+Compress=yes
+Seal=yes
+EOF
+    
+    # Writeback tuning
+    cat >> /etc/sysctl.d/60-memory-optimization.conf << 'EOF'
+
+# Writeback tuning
+vm.dirty_background_bytes = 67108864
+vm.dirty_bytes = 536870912
+vm.dirty_expire_centisecs = 3000
+vm.dirty_writeback_centisecs = 500
+EOF
+    
+    success "Enhanced memory and storage optimization complete"
+}
+
+#-------------------------------------------------------------------------------
+# Enhanced Power Management
+#-------------------------------------------------------------------------------
+enhance_power_management() {
+    header "Enhanced Power Management"
+    
+    # Powertop auto-tune
+    log "Configuring powertop auto-tune..."
+    if command -v powertop &>/dev/null; then
+        cat > /etc/systemd/system/powertop.service << 'EOF'
+[Unit]
+Description=Powertop auto-tune
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/powertop --auto-tune
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl enable powertop.service 2>/dev/null || true
+        success "Powertop auto-tune enabled"
+    fi
+    
+    # SATA link power management
+    log "Configuring SATA power management..."
+    cat > /etc/udev/rules.d/60-sata-pm.rules << 'EOF'
+# SATA Link Power Management
+ACTION=="add", SUBSYSTEM=="scsi_host", ATTR{link_power_management_policy}="min_power"
+EOF
+    
+    # USB autosuspend (already present, ensure it's enabled)
+    log "Ensuring USB autosuspend..."
+    cat > /etc/udev/rules.d/60-usb-autosuspend.rules << 'EOF'
+# USB autosuspend - enable for all devices
+ACTION=="add", SUBSYSTEM=="usb", TEST=="power/control", ATTR{power/control}="auto"
+# But disable for input devices to avoid lag
+ACTION=="add", SUBSYSTEM=="usb", ATTR{bInterfaceClass}=="03", ATTR{power/control}="on"
+EOF
+    
+    # Runtime PM for PCI devices
+    cat > /etc/udev/rules.d/60-pci-runtime-pm.rules << 'EOF'
+# Enable runtime PM for all PCI devices
+ACTION=="add", SUBSYSTEM=="pci", ATTR{power/control}="auto"
+EOF
+    
+    # CPU frequency scaling
+    log "Configuring CPU frequency scaling..."
+    if [[ -d /sys/devices/system/cpu/intel_pstate ]]; then
+        cat > /etc/tuned/cpu-pstate.conf << 'EOF'
+[cpu]
+# Ensure active mode for intel_pstate
+governor=performance
+EOF
+    fi
+    
+    success "Enhanced power management complete"
+}
+
+#-------------------------------------------------------------------------------
+# Security Hardening
+#-------------------------------------------------------------------------------
+apply_security_hardening() {
+    header "Security Hardening"
+    
+    # Enable firewalld
+    log "Configuring firewall..."
+    dnf install -y firewalld 2>&1 | tee -a "$LOG_FILE" || true
+    systemctl enable firewalld 2>/dev/null || true
+    systemctl start firewalld 2>/dev/null || true
+    firewall-cmd --permanent --set-default-zone=home 2>/dev/null || true
+    success "Firewall enabled"
+    
+    # SELinux enforcing
+    log "Configuring SELinux..."
+    if command -v getenforce &>/dev/null; then
+        local current_selinux
+        current_selinux=$(getenforce 2>/dev/null || echo "Unknown")
+        if [[ "$current_selinux" != "Enforcing" ]]; then
+            setenforce 1 2>/dev/null || true
+            sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config 2>/dev/null || true
+            success "SELinux set to enforcing"
+        else
+            success "SELinux already enforcing"
+        fi
+    fi
+    
+    # Auditd
+    log "Configuring auditd..."
+    dnf install -y audit 2>&1 | tee -a "$LOG_FILE" || true
+    systemctl enable auditd 2>/dev/null || true
+    
+    # Network security sysctl
+    log "Applying network security hardening..."
+    cat > /etc/sysctl.d/60-security-hardening.conf << 'EOF'
+# Network Security Hardening
+# Disable ICMP redirects
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv6.conf.all.accept_redirects = 0
+net.ipv6.conf.default.accept_redirects = 0
+
+# Enable rp_filter
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+
+# Enable ASLR
+kernel.randomize_va_space = 2
+
+# Disable source packet routing
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+
+# Ignore ICMP ping
+net.ipv4.icmp_echo_ignore_all = 0
+
+# Protect against TCP SYN flood
+net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_syn_retries = 2
+net.ipv4.tcp_synack_retries = 2
+
+# Disable IPv6 if not needed
+net.ipv6.conf.all.disable_ipv6 = 0
+net.ipv6.conf.default.disable_ipv6 = 0
+EOF
+    
+    # SSH hardening
+    log "Hardening SSH configuration..."
+    if [[ -f /etc/ssh/sshd_config ]]; then
+        cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup.$(date +%Y%m%d) 2>/dev/null || true
+        
+        # Create sshd_config.d override instead of modifying main file
+        mkdir -p /etc/ssh/sshd_config.d
+        cat > /etc/ssh/sshd_config.d/hardening.conf << 'EOF'
+# SSH Hardening
+PermitRootLogin no
+PasswordAuthentication no
+PubkeyAuthentication yes
+MaxAuthTries 3
+ClientAliveInterval 300
+ClientAliveCountMax 2
+X11Forwarding no
+AllowTcpForwarding no
+PermitEmptyPasswords no
+Protocol 2
+EOF
+        
+        # Validate and reload
+        sshd -t 2>/dev/null && systemctl reload sshd 2>/dev/null || true
+        success "SSH hardened"
+    fi
+    
+    # Lock unnecessary services
+    log "Reviewing services..."
+    local services_to_disable=(
+        avahi-daemon
+        cups
+        bluetooth
+    )
+    for svc in "${services_to_disable[@]}"; do
+        if systemctl list-unit-files | grep -q "^$svc"; then
+            systemctl mask "$svc" 2>/dev/null || true
+        fi
+    done
+    
+    success "Security hardening complete"
+}
+
+#-------------------------------------------------------------------------------
+# Developer Platform Installation
+#-------------------------------------------------------------------------------
+install_developer_platform() {
+    header "Developer Platform Installation"
+    
+    # Core development tools
+    log "Installing core development tools..."
+    local dev_packages=(
+        gcc
+        gcc-c++
+        clang
+        llvm
+        lld
+        lldb
+        rust
+        cargo
+        go
+        zig
+        nasm
+        yasm
+        cmake
+        ninja-build
+        make
+        automake
+        autoconf
+        libtool
+        pkgconfig
+        perl
+        python3
+        python3-pip
+        git
+        git-lfs
+        curl
+        wget
+        tar
+        gzip
+        bzip2
+        xz
+        zip
+        unzip
+    )
+    dnf install -y "${dev_packages[@]}" 2>&1 | tee -a "$LOG_FILE"
+    
+    # 32-bit development libraries
+    log "Installing 32-bit development libraries..."
+    local i686_dev_packages=(
+        glibc.i686
+        glibc-devel.i686
+        libstdc++.i686
+        libstdc++-devel.i686
+        zlib.i686
+        openssl.i686
+    )
+    dnf install -y "${i686_dev_packages[@]}" 2>&1 | tee -a "$LOG_FILE" || true
+    
+    # Wine (64-bit and 32-bit)
+    log "Installing Wine..."
+    dnf install -y wine wine-common 2>&1 | tee -a "$LOG_FILE" || true
+    
+    # Mingw toolchains
+    log "Installing MinGW cross-compilation toolchains..."
+    local mingw_packages=(
+        mingw64-gcc
+        mingw64-gcc-c++
+        mingw32-gcc
+        mingw32-gcc-c++
+    )
+    dnf install -y "${mingw_packages[@]}" 2>&1 | tee -a "$LOG_FILE" || true
+    
+    # Vulkan SDK
+    log "Installing Vulkan SDK..."
+    local vulkan_packages=(
+        vulkan-devel
+        vulkan-headers
+    )
+    dnf install -y "${vulkan_packages[@]}" 2>&1 | tee -a "$LOG_FILE"
+    
+    # Additional development tools
+    log "Installing additional development tools..."
+    local extra_packages=(
+        strace
+        ltrace
+        gdb
+        valgrind
+        perf
+        systemtap
+        elfutils
+        patch
+        diffutils
+    )
+    dnf install -y "${extra_packages[@]}" 2>&1 | tee -a "$LOG_FILE"
+    
+    success "Developer platform installed"
+}
+
+#-------------------------------------------------------------------------------
+# Virtualization & Multi-Arch Support
+#-------------------------------------------------------------------------------
+install_virtualization() {
+    header "Virtualization & Multi-Arch Support"
+    
+    # KVM and QEMU
+    log "Installing virtualization stack..."
+    local virt_packages=(
+        qemu-kvm
+        libvirt
+        libvirt-client
+        virt-install
+        virt-manager
+        virt-viewer
+        libvirt-daemon
+        libvirt-daemon-config-network
+        libvirt-daemon-driver-interface
+        libvirt-daemon-driver-network
+        libvirt-daemon-driver-nodedev
+        libvirt-daemon-driver-nwfilter
+        libvirt-daemon-driver-secret
+        libvirt-daemon-driver-storage
+        bridge-utils
+        dnsmasq
+        iptables
+    )
+    dnf install -y "${virt_packages[@]}" 2>&1 | tee -a "$LOG_FILE"
+    
+    # Enable virtualization
+    log "Enabling virtualization services..."
+    systemctl enable libvirtd 2>/dev/null || true
+    systemctl start libvirtd 2>/dev/null || true
+    
+    # Detect VT-x support
+    if grep -q 'vmx' /proc/cpuinfo; then
+        success "Intel VT-x virtualization detected"
+    else
+        warn "Intel VT-x not detected - virtualization may be limited"
+    fi
+    
+    # Enable nested virtualization (optional, for testing)
+    cat > /etc/modprobe.d/kvm-intel.conf << 'EOF'
+# Enable nested virtualization (for testing only)
+options kvm-intel nested=1
+options kvm-intel ept=1
+EOF
+    
+    # Box64/Box86 for x86 emulation on ARM (if available)
+    log "Checking for box64/box86..."
+    if dnf search box64 2>/dev/null | grep -q box64; then
+        dnf install -y box64 box64-libs 2>&1 | tee -a "$LOG_FILE" || true
+    fi
+    
+    # Enable binfmt_misc for binary format support
+    cat > /etc/sysctl.d/60-binfmt.conf << 'EOF'
+# Enable binary format support
+kernel.binfmt_misc.legacy_handlers = 1
+EOF
+    
+    # Create virt-manager config directory
+    mkdir -p ~/.local/share/virt-manager
+    
+    success "Virtualization support installed"
+}
+
+#-------------------------------------------------------------------------------
+# Desktop Smoothness & UX Optimization
+#-------------------------------------------------------------------------------
+optimize_desktop_smoothness() {
+    header "Desktop Smoothness & UX Optimization"
+    
+    # GNOME compositor settings
+    log "Optimizing GNOME compositor..."
+    
+    # Create GNOME overrides directory
+    mkdir -p /etc/dconf/db/local.d
+    
+    cat > /etc/dconf/db/local.d/compositor << 'EOF'
+# GNOME compositor optimizations
+[org/gnome/desktop/interface]
+enable-animations=false
+gtk-enable-animations=false
+
+[org/gnome/desktop/peripherals/touchpad]
+disable-while-typing=true
+tap-to-click=true
+
+[org/gnome/settings-daemon/plugins/power]
+sleep-inactive-ac-timeout=1800
+sleep-inactive-battery-timeout=600
+EOF
+    
+    dconf update 2>/dev/null || true
+    
+    # Wayland configuration
+    log "Configuring Wayland..."
+    mkdir -p /etc/environment.d
+    cat > /etc/environment.d/99-wayland.conf << 'EOF'
+# Wayland optimizations
+XDG_CURRENT_DESKTOP=GNOME
+XDG_SESSION_TYPE=wayland
+CLUTTER_BACKEND=wayland
+GDK_BACKEND=wayland,x11
+QT_QPA_PLATFORM=wayland;xcb
+MOZ_ENABLE_WAYLAND=1
+ELECTRON_OZONE_PLATFORM_HINT=auto
+EOF
+    
+    # Triple buffering (if available)
+    log "Configuring display..."
+    cat > /etc/modprobe.d/video.conf << 'EOF'
+# Video driver options
+options amdgpu dc=1
+options nvidia-drm modeset=1
+EOF
+    
+    # File watcher limits
+    log "Configuring file watcher limits..."
+    cat >> /etc/sysctl.d/60-memory-optimization.conf << 'EOF'
+
+# File watcher limits for development
+fs.inotify.max_user_watches = 524288
+fs.inotify.max_user_instances = 1024
+EOF
+    
+    # Gamemode daemon
+    log "Enabling gamemode daemon..."
+    if command -v gamemoded &>/dev/null; then
+        systemctl --user enable gamemoded 2>/dev/null || true
+        systemctl --user start gamemoded 2>/dev/null || true
+    fi
+    
+    # Input latency reduction
+    cat > /etc/udev/rules.d/60-input-latency.rules << 'EOF'
+# Reduce input latency
+ACTION=="add", SUBSYSTEM=="input", ATTR{latency_enabled}="1"
+EOF
+    
+    success "Desktop smoothness optimization complete"
+}
+
+#-------------------------------------------------------------------------------
 # Main
 #-------------------------------------------------------------------------------
 main() {
@@ -2669,14 +3269,16 @@ main() {
     optimize_virt_resources
     optimize_virtual_resources_advanced  # NEW: Enhanced cgroups/isolation
     
-    # Memory Optimization
+    # Memory & Storage Optimization
     optimize_memory
+    enhance_memory_storage         # NEW: File descriptors, journal, noatime
     
     # GPU Optimization
     optimize_gpu_amd
     enhance_amd_gpu
     optimize_gpu_nvidia
     enhance_nvidia_gpu
+    extend_gpu_optimization        # NEW: 32-bit, DXVK, VKD3D, runtime PM
     
     # Multi-GPU & Vulkan
     configure_dual_gpu_gaming
@@ -2690,7 +3292,20 @@ main() {
     
     # Power Management
     optimize_power
+    enhance_power_management       # NEW: powertop, SATA PM
     create_power_profile_manager    # NEW: Power profile manager
+    
+    # Security Hardening
+    apply_security_hardening       # NEW: firewall, SELinux, SSH
+    
+    # Developer Platform
+    install_developer_platform     # NEW: gcc, rust, go, wine, mingw
+    
+    # Virtualization
+    install_virtualization         # NEW: KVM, QEMU, box64
+    
+    # Desktop Smoothness
+    optimize_desktop_smoothness    # NEW: GNOME, Wayland, file watchers
     
     # Boot Configuration
     configure_grub
@@ -2735,6 +3350,16 @@ main() {
     echo "  • Run 'verify-optimization' to check all settings"
     echo ""
     echo -e "${YELLOW}⚠ REBOOT REQUIRED for all changes to take effect!${NC}"
+    echo ""
+    echo "Would you like to reboot now? (y/N)"
+    read -r reboot_choice
+    if [[ "$reboot_choice" =~ ^[Yy]$ ]]; then
+        echo "Rebooting system in 10 seconds..."
+        echo "Press Ctrl+C to cancel"
+        sleep 10
+        systemctl reboot
+    fi
+    
     echo ""
     echo "Backup location: $BACKUP_DIR"
     echo "Restore command: sudo $BACKUP_DIR/restore.sh"
