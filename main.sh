@@ -1069,9 +1069,12 @@ optimize_power() {
     # 2. USB autosuspend rules
     cat > /etc/udev/rules.d/60-usb-power.rules << 'EOF'
 # Enable USB autosuspend for non-input devices
-ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="*", TEST=="power/control", ATTR{power/control}="auto"
-# Disable for mice/keyboards to avoid lag
-ACTION=="add", SUBSYSTEM=="usb", ATTR{bInterfaceClass}=="03", ATTR{power/control}="on"
+ACTION=="add", SUBSYSTEM=="usb", TEST=="power/control", ATTR{power/control}="auto"
+# Disable autosuspend for mice, keyboards, and other HID/input devices
+# Match by driver to reliably identify input devices at the USB device level
+ACTION=="add", SUBSYSTEM=="usb", DRIVER=="usbhid", ATTR{power/control}="on"
+ACTION=="add|change", SUBSYSTEM=="usb", ATTRS{bInterfaceClass}=="03", ATTR{power/control}="on"
+ACTION=="add|change", SUBSYSTEM=="input", ATTRS{idVendor}!="", RUN+="/bin/sh -c 'echo on > /sys$env{DEVPATH}/../power/control 2>/dev/null || true'"
 EOF
 
     # 3. SATA/AHCI Link Power Management
@@ -2831,24 +2834,59 @@ EOF
 enhance_power_management() {
     header "Enhanced Power Management"
     
-    # Powertop auto-tune
+    # Powertop auto-tune (with input device protection)
     log "Configuring powertop auto-tune..."
     if command -v powertop &>/dev/null; then
+        # Create a wrapper that runs powertop then re-disables autosuspend for input devices
+        cat > /usr/local/bin/powertop-safe << 'PTSCRIPT'
+#!/bin/bash
+# Run powertop auto-tune then restore input devices to prevent mouse/keyboard sleep
+/usr/bin/powertop --auto-tune
+
+# Re-disable autosuspend for all USB HID/input devices (mice, keyboards)
+for dev in /sys/bus/usb/devices/*/; do
+    if [[ -f "${dev}bInterfaceClass" ]]; then
+        class=$(cat "${dev}bInterfaceClass" 2>/dev/null)
+        if [[ "$class" == "03" ]]; then
+            parent=$(dirname "$dev")
+            if [[ -f "${parent}/power/control" ]]; then
+                echo "on" > "${parent}/power/control" 2>/dev/null || true
+            fi
+            if [[ -f "${dev}power/control" ]]; then
+                echo "on" > "${dev}power/control" 2>/dev/null || true
+            fi
+        fi
+    fi
+done
+
+# Also match by input subsystem
+for dev in /sys/class/input/*/device; do
+    realdev=$(readlink -f "$dev" 2>/dev/null)
+    if [[ -n "$realdev" ]]; then
+        usb_parent=$(echo "$realdev" | grep -oP '.*/usb[0-9]+/[^/]+')
+        if [[ -n "$usb_parent" && -f "${usb_parent}/power/control" ]]; then
+            echo "on" > "${usb_parent}/power/control" 2>/dev/null || true
+        fi
+    fi
+done
+PTSCRIPT
+        chmod +x /usr/local/bin/powertop-safe
+
         cat > /etc/systemd/system/powertop.service << 'EOF'
 [Unit]
-Description=Powertop auto-tune
+Description=Powertop auto-tune (input device safe)
 After=multi-user.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/powertop --auto-tune
+ExecStart=/usr/local/bin/powertop-safe
 RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
 EOF
         systemctl enable powertop.service 2>/dev/null || true
-        success "Powertop auto-tune enabled"
+        success "Powertop auto-tune enabled (mice/keyboards exempted)"
     fi
     
     # SATA link power management
@@ -2858,13 +2896,15 @@ EOF
 ACTION=="add", SUBSYSTEM=="scsi_host", ATTR{link_power_management_policy}="min_power"
 EOF
     
-    # USB autosuspend (already present, ensure it's enabled)
-    log "Ensuring USB autosuspend..."
+    # USB autosuspend -- enable for all except input devices (mice, keyboards)
+    log "Configuring USB autosuspend (input devices exempted)..."
     cat > /etc/udev/rules.d/60-usb-autosuspend.rules << 'EOF'
 # USB autosuspend - enable for all devices
 ACTION=="add", SUBSYSTEM=="usb", TEST=="power/control", ATTR{power/control}="auto"
-# But disable for input devices to avoid lag
-ACTION=="add", SUBSYSTEM=="usb", ATTR{bInterfaceClass}=="03", ATTR{power/control}="on"
+# Disable autosuspend for HID/input devices (mice, keyboards) to prevent sensor timeout
+ACTION=="add", SUBSYSTEM=="usb", DRIVER=="usbhid", ATTR{power/control}="on"
+ACTION=="add|change", SUBSYSTEM=="usb", ATTRS{bInterfaceClass}=="03", ATTR{power/control}="on"
+ACTION=="add|change", SUBSYSTEM=="input", ATTRS{idVendor}!="", RUN+="/bin/sh -c 'echo on > /sys$env{DEVPATH}/../power/control 2>/dev/null || true'"
 EOF
     
     # Runtime PM for PCI devices
