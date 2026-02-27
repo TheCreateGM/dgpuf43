@@ -1,8 +1,8 @@
-# Fedora 43 Advanced System Optimizer
+# Fedora 43 Advanced System Optimizer — Dual-GPU Workstation
 
-Version 4.0.0
+Version 8.0.0
 
-A comprehensive, production-ready optimization script for Fedora Linux 43, targeting maximum performance with power efficiency for desktop and gaming workloads.
+A comprehensive, production-ready optimization script for Fedora 43 Linux targeting maximum performance with power efficiency for desktop, gaming, AI/compute, and development workloads.
 
 ---
 
@@ -11,9 +11,9 @@ A comprehensive, production-ready optimization script for Fedora Linux 43, targe
 - **CPU**: Intel Core i9-9900 (8 cores / 16 threads)
 - **RAM**: 64GB DDR4
 - **GPU 1**: AMD RX 6400 XT (Primary Display)
-- **GPU 2**: NVIDIA GTX 1650 (Compute/Offload)
-- **Motherboard**: ASUS Z390-F Gaming
-- **OS**: Fedora Linux 43 (Wayland + X11)
+- **GPU 2**: NVIDIA RTX 3050 (Compute/Offload)
+- **Motherboard**: ASUS ROG Strix Z390-F Gaming
+- **OS**: Fedora Linux 43 (Xfce, X11)
 
 ---
 
@@ -21,160 +21,186 @@ A comprehensive, production-ready optimization script for Fedora Linux 43, targe
 
 ### CPU Optimization
 
-- Intel P-state configuration with `balance_performance` EPP
-- Turbo Boost enabled with dynamic frequency scaling
-- Kernel scheduler tuning for desktop responsiveness
-- Scheduler autogroup for better interactive workloads
-- Custom `tuned` profile (gaming-optimized)
-- thermald integration for thermal management
-- IRQ balancing with custom policy
-- CPU affinity optimization for system services
+- Intel P-state configuration with Turbo Boost and HWP dynamic boost
+- Kernel scheduler tuning (autogroup, migration cost, latency, granularity)
+- RCU offloading and timer migration
+- NUMA-aware scheduling for single-socket optimization
+- IRQ balancing with `irqbalance` (deepest cache level 2)
+- Custom `tuned` profiles: `extreme-performance` and `balanced-performance`
+- `thermald` integration for thermal management
+- Intel microcode updates
+- Systemd CPU affinity for critical services (NetworkManager, sshd, firewalld)
 
-### Advanced CPU Topology Optimization
+### CPU Instruction Set Detection
 
-- NUMA-aware scheduling (single-socket optimization)
-- CPU set configuration for workload isolation
-- System services reserved to cores 0-1
-- Application cores 2-7 (and HT siblings 10-15) available
-- IRQ affinity binding for network/storage/GPU
-- Real-time scheduling improvements
-- Timer migration disabled for lower latency
+- Automatic detection of AVX-512, AVX2, AES-NI, SSE4.2, FMA
+- Compiler flags (`CFLAGS`/`CXXFLAGS`) tuned per detected instruction set
+- Intel MKL/IPP/OpenMP threading configured for 16 threads
+
+### Intel Optimized Libraries
+
+- Intel IPP Cryptography (ipp-crypto)
+- DGEMM optimization (AVX-512/AVX2)
+- Highwayhash (minio)
+- BLAS/LAPACK/MKL threading environment
+- AES-NI hardware crypto acceleration
+
+### Thread Affinity and Workload Isolation
+
+- cgroups v2 with systemd slices:
+  - `gaming.slice` — high CPU priority (weight 200), all cores
+  - `compute.slice` — cores 4–15, weight 180
+  - `background.slice` — low priority (weight 20)
+- Launch commands: `main.sh run-gaming -- <cmd>` / `main.sh run-compute -- <cmd>`
+- Compute thread affinity via environment.d (KMP, OMP, MKL, BLAS)
 
 ### Memory Optimization (64GB Aware)
 
 - Low swappiness (10) for high-RAM systems
 - Optimized dirty page ratios to prevent stalls
 - Transparent Huge Pages set to `madvise`
-- ZRAM with zstd compression (16GB / 25% of RAM)
 - EarlyOOM protection against runaway processes
 - `vm.max_map_count` set for gaming compatibility (2147483642)
-- Hugepages pre-allocated (1024 x 2MB = 2GB)
+- Hugepages pre-allocated (1024 × 2MB = 2GB)
 - VFS cache pressure optimization
-- Memory compaction for reduced fragmentation
-- Preload for predictive application caching
+- Memory compaction and defragmentation tuning
+- jemalloc/tcmalloc allocator environment tuning
+- Storage optimization frameworks (TidesDB, WiscKey, caRamel, java-memory-agent)
 
 ### Dual-GPU Setup (AMD + NVIDIA)
 
-- **AMD RX 6400 XT**: Primary display, Vulkan/RADV, VA-API
-- **NVIDIA GTX 1650**: PRIME render offload, compute tasks
-- Automatic NVIDIA driver installation (akmod)
-- NVIDIA persistence mode and power management
-- GPU selection utilities for per-application control
-- Enhanced AMD RDNA2 optimizations (ACO, GPL, NGGC, SAM)
-- User-accessible GPU power controls via udev rules
+- **AMD RX 6400 XT**: Primary display, Vulkan/RADV, ACO/GPL/NGGC/SAM
+- **NVIDIA RTX 3050**: PRIME render offload via `main.sh run-nvidia`, compute tasks
+- Automatic NVIDIA driver installation (akmod) with Secure Boot MOK enrollment
+- NVIDIA persistence mode and dynamic power management
+- GPU coordination via modprobe, udev, and environment.d
 
-### Vulkan Multi-GPU Configuration
+### Graphics Pipeline
 
-- Both GPUs visible to Vulkan applications
-- ICD file management for GPU selection
-- DXVK global configuration with async shaders
-- VKD3D-Proton optimization
-- RADV optimizations for RDNA2
-- Multi-GPU launcher with flexible options
+- **Vulkan Multi-GPU**: Both GPUs visible to Vulkan applications via ICD files
+- **Zink**: OpenGL over Vulkan for reduced driver overhead (Mesa)
+- **ANGLE**: OpenGL ES compatibility layer over Vulkan
+- **vkBasalt**: Global Vulkan post-processing (FSR, NIS)
+- **DXVK/VKD3D**: DirectX-to-Vulkan translation for Windows games
+- Shader cache optimization (10GB Mesa disk cache)
 
-### LSFG-VK Integration
+### Advanced GPU Utilities
 
-- Lossless Scaling Frame Generation for Vulkan
-- Auto-builds from source during installation
-- Vulkan implicit layer registration
-- Compatible with Steam's Lossless Scaling assets
-- Wrapper script for easy activation
+- **LSFG-VK**: Lossless Scaling Frame Generation for Vulkan
+- **Pikzel**: Modern C++ graphics framework (0xworks)
+- **ComfyUI-MultiGPU**: Multi-GPU AI workload support
+- **optimus-GPU-switcher**: GPU switching utility (NVIDIA systems)
+- **vgpu_unlock**: NVIDIA vGPU support (DualCoder)
+- All cloned to `/opt/gpu-utils/`
 
 ### Magpie-like Upscaling
 
 - GPU-accelerated window upscaling via Gamescope
-- FSR (FidelityFX Super Resolution) support
-- NIS (NVIDIA Image Scaling) support
-- Integer, linear, and nearest scaling modes
-- Presets: 720p, 900p, 1080p, 4K Performance/Balanced/Quality
-- Configurable FSR sharpness (0-20)
-- GPU selection for compositor
+- FSR (FidelityFX Super Resolution) and NIS (NVIDIA Image Scaling) support
+- Configurable resolution and refresh rate
 - MangoHud integration
 
-### Virtual Resource Optimization
+### AI and Compute Optimization
 
-- cgroups v2 configuration for task isolation
-- systemd slice weights (User > Gaming > System)
-- High-performance slice with maximum CPU/IO/Memory priority
-- Background slice for low-priority tasks
-- User session resource controls
-- Real-time scheduling limits
-- Memory locking allowances
+- PyTorch, CUDA, OpenCL, TensorFlow environment configuration
+- Multi-GPU compute (`CUDA_VISIBLE_DEVICES=0,1`)
+- NCCL distributed training support
+- Intel oneMKL / TBB / OpenMP threading
+- Python ML stack: torch, torchvision, numpy, scipy, scikit-learn, onnxruntime, xformers, triton
+- CUDA toolkit, ROCm, and Vulkan SDK installation
 
 ### Network Optimization
 
-- BBR congestion control (Google's algorithm)
-- FQ (Fair Queue) scheduler
-- TCP buffer tuning (32MB max for 64GB RAM)
-- TCP Fast Open enabled
+- BBR congestion control with fq_codel qdisc
+- TCP buffer tuning (16MB max for 64GB RAM)
+- TCP Fast Open enabled (client + server)
 - Low latency TCP optimizations
-- IRQ balancing with irqbalance
-- NIC hardware offloading (TSO, GSO, GRO)
-- Ring buffer maximization
-- Adaptive interrupt coalescing
-- Connection handling optimization (65535 backlog)
-- ECN (Explicit Congestion Notification) enabled
+- Connection handling (16384 backlog, 5000 netdev backlog)
+- NIC offload features (TSO, GSO, GRO)
+- DNS optimization (Cloudflare/Google DNS over TLS)
 
 ### Storage Optimization
 
-- Intelligent I/O scheduler selection:
-  - NVMe: `none` (hardware handles queuing)
-  - SATA SSD: `mq-deadline`
-  - HDD: `bfq`
-- Periodic TRIM via fstrim.timer
-- Optimized read-ahead values
+- Intelligent I/O scheduler selection via udev rules (NVMe: mq-deadline, SSD: bfq, HDD: bfq)
+- Periodic TRIM via `fstrim.timer` (daily)
+- NVMe-specific tuning (nr_requests, read_ahead_kb, writeback cache)
+- `noatime` mount option in fstab
+- Filesystem commit interval optimization
+- Storage frameworks: eloqstore, WiscKey, k4, LogStore, Bf-Tree, TidesDB, RocksDB, LevelDB
 
 ### Power Efficiency
 
-- PCIe ASPM (powersave mode)
-- SATA link power management (med_power_with_dipm)
-- USB autosuspend (except HID devices)
-- Intel audio codec power saving
-- Runtime PM for PCI devices
-- Dynamic CPU/GPU downclocking when idle
+- PowerTOP auto-tune service (PCI/SATA tuning only)
+- PCIe runtime PM and ASPM
+- USB autosuspend **disabled** (desktop workstation — prevents mouse/keyboard dropouts)
+- PowerTOP `ExecStartPost` re-enables all USB devices after `--auto-tune`
+- NMI watchdog disabled
+- Power profile boot service (`fedora-optimizer-apply.service`)
+- CPU frequency scaling per power mode
+- GPU power management (AMD DPM, NVIDIA dynamic power)
 
-### Gaming Tools
+### Kernel Parameter Tuning
 
-- **GameMode** with custom configuration
-- **Gamescope** wrapper for FSR upscaling
-- **MangoHud** pre-configured
-- Gaming slice with priority scheduling
-- DXVK async shader compilation
+- Intel P-state mode via GRUB (active/passive per power mode)
+- CPU security mitigations (configurable via `--mitigations-off`)
+- IOMMU passthrough (if enabled in BIOS)
+- Transparent hugepages via kernel cmdline
+- Watchdog and NMI watchdog disabled
+- BLS-aware GRUB configuration with safety verification
 
-### Developer Platform
+### Bootloader Optimization
 
-- **Core Toolchains**: GCC, Clang/LLVM, Rust, Go, Zig, NASM
-- **Build Systems**: CMake, Ninja, Make, Automake
-- **Scripting**: Python 3, Perl, Git with LFS support
-- **Windows Compatibility**: Wine, DXVK, VKD3D-Proton
-- **Cross-Compilation**: MinGW-w64 (32-bit and 64-bit)
-- **Debugging**: GDB, Valgrind, Strace, Ltrace, Perf
-- **Development Libraries**: Full 32-bit development stack
-
-### Virtualization & Multi-Arch
-
-- **KVM/QEMU**: Full virtualization stack with virt-manager
-- **libvirt**: Complete VM management infrastructure
-- **Nested Virtualization**: Enabled for Intel VT-x
-- **Multi-Arch Support**: Box64/Box86 for x86 emulation (if available)
-- **Binary Format Support**: binfmt_misc for cross-architecture execution
+- GRUB timeout reduced for faster boot
+- systemd parallel service loading
+- Unnecessary boot services disabled
 
 ### Security Hardening
 
-- **Firewall**: firewalld with home zone configuration
-- **SELinux**: Enforcing mode enabled
-- **Audit**: auditd for system auditing
-- **SSH Hardening**: Root login disabled, key-only auth, connection limits
-- **Network Security**: rp_filter, syncookies, redirect protection
-- **Service Masking**: Unnecessary services (avahi, cups, bluetooth) masked
+- Kernel hardening (`kptr_restrict`, `dmesg_restrict`, `ptrace_scope`, `kexec_load_disabled`)
+- Network security (`rp_filter`, TCP SYN cookies, source route filtering)
+- SSH hardening (no root login, password + pubkey auth, rate limiting)
+- Firewall (`firewalld`) enabled with SSH allowed
+- `fail2ban` for SSH brute-force protection
+- SELinux enforcing maintained
+- Telemetry/ABRT services disabled
+- `auditd` with security monitoring rules
+- Rootkit detection tools (rkhunter/chkrootkit)
 
-### Desktop Smoothness & UX
+### Privacy Optimization
 
-- **GNOME Optimizations**: Reduced animations, touchpad improvements
-- **Wayland Native**: Proper environment variables for Wayland apps
-- **File Watchers**: Increased inotify limits for development
-- **Input Latency**: Reduced input latency via udev rules
-- **Display**: Triple buffering, proper video driver modesetting
+- ABRT and crash reporting services disabled
+- DNF anonymous counting (`countme`) disabled
+- Journal logging limits (512MB system, 128MB runtime, 1 week retention)
+- Unnecessary background services disabled
+
+### System Smoothness
+
+- PipeWire low-latency configuration (256 samples @ 48kHz)
+- Realtime scheduling for audio (@audio group, rtprio 95)
+- Input latency optimization (timer slack 50μs, scheduler tuning)
+- Compositor optimizations (Qt, GTK environment variables)
+- Frame pacing and VSync configuration
+- Developer build flags (`-O3 -march=native -flto` via environment.d)
+- Preload for predictive application caching
+- EarlyOOM protection
+
+### Developer Platform (skippable with `--skip-developer-tools`)
+
+- C/C++ (GCC, Clang, CMake, Ninja, Make, Meson)
+- Rust/Cargo, Go, Python 3, Perl, Zig, NASM
+- Dart/Flutter SDK
+- Multi-architecture: 32-bit libs, ARM cross-compilation, MinGW
+- Wine for Windows compatibility, Android tools
+- System debugging: valgrind, gdb, strace, ltrace, perf, bpftrace
+
+### Virtualization & Cross-Platform
+
+- KVM/QEMU/Libvirt virtualization stack (requires CPU VMX/SVM; auto-detected)
+- Graceful skip if hardware virtualization is absent — Wine and Android still configured
+- VFIO readiness (IOMMU configuration if enabled in BIOS)
+- Wine optimization for Windows compatibility (FSR enabled)
+- Android emulation environment
+- CPU pinning hooks for VMs
 
 ---
 
@@ -189,465 +215,111 @@ sudo ./main.sh
 
 The script will:
 
-1. Detect your hardware (CPU, RAM, GPUs)
-2. Create a backup for rollback
-3. Enable RPM Fusion repositories
-4. Install required packages and NVIDIA drivers
-5. Build and install LSFG-VK
-6. Install developer platform (GCC, Rust, Go, Wine, MinGW)
-7. Set up virtualization stack (KVM, QEMU, virt-manager)
-8. Apply security hardening (firewall, SELinux, SSH)
-9. Apply all CPU, memory, GPU, network, and storage optimizations
-10. Configure desktop smoothness settings
-11. Configure kernel boot parameters
-12. Install helper utilities
-13. Create verification tools
+1. Run pre-flight health checks and clean up dangerous files from previous runs
+2. Detect hardware (CPU, RAM, GPUs, storage, instruction sets)
+3. Install required packages and NVIDIA drivers
+4. Create a manifest-based backup for rollback
+5. Apply all optimizations (CPU, GPU, memory, storage, network, kernel, power, security)
+6. Configure kernel boot parameters (GRUB) with BLS awareness
+7. Set up systemd slices, power profile manager, and AI/compute environment
+8. Validate all configuration files
+9. Prompt for reboot
+
+### Command-Line Options
+
+```bash
+sudo ./main.sh [OPTIONS] [SUBCOMMAND] [ARGS...]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--dry-run` | Show changes without applying them |
+| `--non-interactive` | Skip all confirmation prompts (same as `--no-confirm`) |
+| `--no-confirm` | Skip all confirmation prompts |
+| `--rollback <run-id>` | Restore system from a previous backup |
+| `--apply-after-reboot` | Automatically reboot after optimization |
+| `--power-mode <mode>` | Set power mode (`balanced`, `performance`, `powersave`) |
+| `--mitigations-off` | Disable CPU security mitigations for performance |
+| `--deep-cstates` | Enable deep C-state restrictions for low latency |
+| `--enable-virtualization` | Enable virtualization support (QEMU/KVM/VFIO) |
+| `--skip-developer-tools` | Skip installation of developer tools and languages |
+| `--help` | Display help message and exit |
 
 ### After Installation
 
 ```bash
 sudo reboot
-verify-optimization  # Check all optimization states
-system-status        # View system overview
+
+# Check power profile
+./main.sh power-mode status
+
+# Check GPU status
+./main.sh gpu-info
+
+# List available backups
+./main.sh --list-backups
 ```
 
 ---
 
-## Installed Utilities
-
-### GPU and Gaming
+## Subcommands
 
 | Command | Description |
 |---------|-------------|
-| `gpu-select [amd\|nvidia\|parallel\|auto] <cmd>` | Run command on specific GPU |
-| `multigpu-run [options] <cmd>` | Multi-GPU launcher with flexible options |
-| `magpie-linux [options] <cmd>` | FSR/NIS upscaling (Magpie-like) |
-| `lsfg-run <cmd>` | LSFG-VK frame generation |
-| `gaming-run <cmd>` | Run in high-priority gaming slice |
-| `upscale-run <scaler> <w> <h> <cmd>` | Basic Gamescope upscaling wrapper |
-
-### CPU and Performance
-
-| Command | Description |
-|---------|-------------|
-| `cpu-pin <mode> <cmd>` | CPU affinity control |
-| `highperf-run <cmd>` | Maximum performance cgroup slice |
-| `background-run <cmd>` | Low-priority background execution |
-
-### System Management
-
-| Command | Description |
-|---------|-------------|
-| `power-profile <mode>` | Power profile switching (performance/balanced/powersave/gaming) |
-| `amd-gpu-mode <mode>` | AMD GPU power control (performance/power/auto/manual) |
-| `nvidia-gpu-mode <mode>` | NVIDIA GPU power control (performance/power/auto) |
-| `optimize-irq` | Optimize IRQ affinity for network/storage/GPU |
-| `nic-optimize <interface>` | Optimize network interface settings |
-| `mtu-optimize <interface>` | Auto-detect and set optimal MTU |
-| `upscale-run <scaler> <w> <h> <cmd>` | Basic Gamescope upscaling wrapper |
-
-### Developer Tools
-
-| Command | Description |
-|---------|-------------|
-| `wine` | Windows application compatibility layer |
-| `box64` | x86_64 emulation on ARM64 (if available) |
-| `virt-manager` | Virtual machine management GUI |
-
-### Security Tools
-
-| Command | Description |
-|---------|-------------|
-| `firewall-cmd` | Firewall management |
-| `ausearch` | Audit log search |
-| `getenforce` | Check SELinux status |
-
-### Monitoring and Diagnostics
-
-| Command | Description |
-|---------|-------------|
-| `system-status` | System overview |
-| `vulkan-info` | Vulkan GPU information |
-| `net-benchmark` | Network testing |
-| `perf-test` | Performance benchmarks |
-| `verify-optimization` | Verify all optimizations |
-
----
-
-## Usage Examples
-
-### GPU Selection
-
-```bash
-# Run Blender on NVIDIA
-gpu-select nvidia blender
-
-# Run Firefox on AMD
-gpu-select amd firefox
-
-# Both GPUs visible (Vulkan multi-GPU)
-gpu-select parallel ./vulkan-app
-
-# Auto-detect (system default)
-gpu-select auto ./app
-```
-
-### Multi-GPU Launcher
-
-```bash
-# Primary AMD, NVIDIA as secondary
-multigpu-run --primary-amd steam
-
-# NVIDIA only with MangoHud
-multigpu-run --nvidia-only --mangohud ./game
-
-# Both GPUs with LSFG frame generation
-multigpu-run --both --lsfg ./game
-
-# With Gamescope at 1440p
-multigpu-run --gamescope 2560 1440 ./game
-```
-
-### Magpie-like Upscaling
-
-```bash
-# Quick preset: 720p to native with FSR
-magpie-linux --720p ./game
-
-# Custom: 720p to 1440p with FSR
-magpie-linux -i 1280x720 -o 2560x1440 -s fsr ./game
-
-# 4K Quality preset with MangoHud
-magpie-linux --4k-quality --mangohud steam steam://rungameid/12345
-
-# NIS scaler instead of FSR
-magpie-linux -s nis --720p ./game
-```
-
-### CPU Pinning
-
-```bash
-# Performance mode (all cores except system-reserved)
-cpu-pin performance ./render-job
-
-# Gaming mode (physical cores only, no HT)
-cpu-pin gaming ./game
-
-# Render mode (all 16 threads)
-cpu-pin render blender -b scene.blend
-
-# Single high-performance core
-cpu-pin single ./single-threaded-app
-
-# Balanced (half capacity)
-cpu-pin balanced ./background-task
-```
-
-### Power Profiles
-
-```bash
-# Maximum performance
-sudo power-profile performance
-
-# Gaming (performance + low latency)
-sudo power-profile gaming
-
-# Daily use / balanced
-sudo power-profile balanced
-
-# Power saving
-sudo power-profile powersave
-
-# Check current state
-power-profile status
-```
-
-### Resource Control
-
-```bash
-# Run game in high-priority slice
-highperf-run ./game
-
-# Run backup in background slice
-background-run rsync -av /home /backup
-
-# Gaming slice (systemd scope)
-gaming-run steam
-```
-
-### LSFG Frame Generation
-
-```bash
-# Run with LSFG (requires Lossless Scaling assets)
-lsfg-run ./game
-
-# Or with environment variable
-LSFG_ASSETS="/path/to/Lossless Scaling" lsfg-run ./game
-```
-
-### Quick Aliases
-
-```bash
-# Magpie-Linux quick presets
-fsr720 ./game      # 720p to native with FSR
-fsr900 ./game      # 900p to native with FSR  
-fsr4k ./game       # 4K balanced preset
-upscale ./game     # Custom upscale
-```
-
----
-
-## Configuration Files Created
-
-### Kernel Parameters (sysctl)
-
-| Location | Purpose |
-|----------|---------|
-| `/etc/sysctl.d/60-cpu-scheduler.conf` | Kernel scheduler tuning |
-| `/etc/sysctl.d/60-cpu-topology.conf` | CPU topology and NUMA |
-| `/etc/sysctl.d/60-memory-optimization.conf` | Memory management |
-| `/etc/sysctl.d/60-network-optimization.conf` | Basic network tuning |
-| `/etc/sysctl.d/60-network-advanced.conf` | Advanced network tuning |
-
-### GPU Configuration
-
-| Location | Purpose |
-|----------|---------|
-| `/etc/modprobe.d/amdgpu.conf` | AMD GPU driver options |
-| `/etc/modprobe.d/amdgpu-enhanced.conf` | Enhanced AMD options |
-| `/etc/modprobe.d/nvidia.conf` | NVIDIA driver options |
-| `/etc/profile.d/amd-gpu.sh` | AMD environment variables |
-| `/etc/profile.d/nvidia-gpu.sh` | NVIDIA environment variables |
-| `/etc/profile.d/vulkan-multigpu.sh` | Vulkan multi-GPU config |
-| `/etc/profile.d/magpie-aliases.sh` | Upscaling aliases |
-| `/etc/dxvk.conf` | DXVK global configuration |
-
-### systemd Configuration
-
-| Location | Purpose |
-|----------|---------|
-| `/etc/systemd/zram-generator.conf` | ZRAM swap configuration |
-| `/etc/systemd/system/gaming.slice` | Gaming applications slice |
-| `/etc/systemd/system/highperf.slice` | High-performance slice |
-| `/etc/systemd/system/background.slice` | Background tasks slice |
-| `/etc/systemd/system/user@.service.d/resource-control.conf` | User session limits |
-| `/etc/systemd/system.conf.d/cpu-affinity.conf` | System CPU affinity |
-| `/etc/systemd/system.conf.d/cpu-topology.conf` | CPU topology |
-| `/etc/systemd/system.conf.d/cgroups.conf` | cgroups accounting |
-| `/etc/systemd/system/power-profile-boot.service` | Boot power profile |
-
-### udev Rules
-
-| Location | Purpose |
-|----------|---------|
-| `/etc/udev/rules.d/60-io-scheduler.rules` | I/O scheduler rules |
-| `/etc/udev/rules.d/60-readahead.rules` | Read-ahead tuning |
-| `/etc/udev/rules.d/60-usb-power.rules` | USB power management |
-| `/etc/udev/rules.d/60-pcie-pm.rules` | PCIe power management |
-| `/etc/udev/rules.d/60-network-tuning.rules` | Network interface tuning |
-| `/etc/udev/rules.d/60-usb-autosuspend.rules` | USB autosuspend rules |
-| `/etc/udev/rules.d/60-sata-pm.rules` | SATA power management |
-| `/etc/udev/rules.d/60-pci-runtime-pm.rules` | PCI runtime power management |
-| `/etc/udev/rules.d/60-noatime.rules` | NVMe mount options |
-| `/etc/udev/rules.d/60-nvme-tuning.rules` | NVMe readahead/nr_requests |
-| `/etc/udev/rules.d/60-input-latency.rules` | Input latency reduction |
-| `/etc/udev/rules.d/80-amdgpu-power.rules` | AMD GPU power management |
-
-### Security Configuration
-
-| Location | Purpose |
-|----------|---------|
-| `/etc/sysctl.d/60-security-hardening.conf` | Network security hardening |
-| `/etc/ssh/sshd_config.d/hardening.conf` | SSH hardening overrides |
-| `/etc/selinux/config` | SELinux enforcing mode |
-| `/etc/systemd/system/powertop.service` | Powertop auto-tune service |
-
-### Other
-
-| Location | Purpose |
-|----------|---------|
-| `/etc/tuned/gaming-optimized/tuned.conf` | Custom tuned profile |
-| `/etc/tuned/cpu-pstate.conf` | Intel P-state configuration |
-| `/etc/default/earlyoom` | EarlyOOM configuration |
-| `/etc/sysconfig/irqbalance` | IRQ balance configuration |
-| `/etc/tmpfiles.d/thp.conf` | THP persistent config |
-| `/usr/share/vulkan/implicit_layer.d/lsfg_vk.json` | LSFG Vulkan layer |
-| `/etc/security/limits.d/99-fd-limits.conf` | File descriptor limits |
-| `/etc/systemd/journald.conf.d/99-journal-size.conf` | Journal size limits |
-| `/etc/modprobe.d/kvm-intel.conf` | KVM nested virtualization |
-| `/etc/modprobe.d/nvidia-pm.conf` | NVIDIA runtime PM |
-| `/etc/modprobe.d/video.conf` | Video driver options |
-| `/etc/ssh/sshd_config.backup.*` | SSH config backup |
-| `/etc/dconf/db/local.d/compositor` | GNOME compositor settings |
-| `/etc/environment.d/99-wayland.conf` | Wayland environment |
-| `/etc/sysctl.d/60-binfmt.conf` | Binary format support |
+| `./main.sh run-nvidia -- <cmd>` | Run command with NVIDIA GPU (PRIME offload) |
+| `./main.sh run-gamescope-fsr [nw nh tw th] <cmd>` | Run with Gamescope FSR upscaling |
+| `./main.sh upscale-run [nw nh tw th] -- <cmd>` | Run with Gamescope upscaling layer |
+| `./main.sh gpu-info` | Display GPU information |
+| `./main.sh gpu-benchmark` | Run GPU benchmark (vkcube) |
+| `./main.sh run-compute -- <cmd>` | Run in `compute.slice` (cores 4–15) |
+| `./main.sh run-gaming -- <cmd>` | Run in `gaming.slice` (all cores, high priority) |
+| `./main.sh power-mode status` | Show current power profile and governor |
+| `./main.sh power-mode list` | List available tuned profiles |
+| `sudo ./main.sh power-mode performance` | Switch to extreme-performance profile |
+| `sudo ./main.sh power-mode balanced` | Switch to balanced-performance profile |
+| `sudo ./main.sh power-mode powersave` | Switch to powersave profile |
+| `./main.sh intel-libs-setup` | Show Intel optimized libraries and build instructions |
+| `./main.sh --list-backups` | List available backup run-ids |
+| `sudo ./main.sh --rollback <run-id>` | Restore from manifest-based backup |
 
 ---
 
 ## Rollback
 
-All changes can be reverted:
+All changes can be reverted using the manifest-based backup system:
 
 ```bash
-# Restore from backup
-sudo /var/backup/fedora-optimizer/restore.sh
+./main.sh --list-backups
+sudo ./main.sh --rollback <run-id>
 sudo reboot
 ```
 
-Backup location: `/var/backup/fedora-optimizer/`
+Backup location: `/var/backup/fedora-optimizer/<run-id>/`
 
----
-
-## Verification
-
-```bash
-# Comprehensive verification report
-verify-optimization
-
-# Quick system status
-system-status
-
-# Individual checks
-cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
-cat /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference
-sysctl vm.swappiness
-sysctl net.ipv4.tcp_congestion_control
-nvidia-smi
-zramctl
-tuned-adm active
-```
-
----
-
-## Troubleshooting
-
-### NVIDIA Driver Issues
-
-```bash
-# Check driver status
-lsmod | grep nvidia
-nvidia-smi
-
-# Rebuild kernel module
-sudo akmods --force
-
-# Check logs
-journalctl -b | grep nvidia
-
-# Verify PRIME offload
-__NV_PRIME_RENDER_OFFLOAD=1 glxinfo | grep "OpenGL renderer"
-```
-
-### AMD GPU Issues
-
-```bash
-lsmod | grep amdgpu
-vainfo
-vulkaninfo --summary
-
-# Check power level
-cat /sys/class/drm/card*/device/power_dpm_force_performance_level
-```
-
-### Performance Not Improved
-
-```bash
-# Verify tuned profile is active
-tuned-adm active
-
-# Check if BBR is enabled
-sysctl net.ipv4.tcp_congestion_control
-
-# Verify ZRAM is active
-zramctl
-
-# Check CPU governor and EPP
-cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
-cat /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference
-
-# Verify scheduler tuning
-sysctl kernel.sched_autogroup_enabled
-```
-
-### Multi-GPU Issues
-
-```bash
-# List Vulkan devices
-vulkaninfo --summary
-
-# Check ICD files
-ls -la /usr/share/vulkan/icd.d/
-
-# Test specific GPU
-gpu-select amd vulkaninfo --summary
-gpu-select nvidia vulkaninfo --summary
-```
-
-### Reset Everything
-
-```bash
-sudo /var/backup/fedora-optimizer/restore.sh
-sudo reboot
-```
-
----
-
-## What Gets Installed
-
-### Packages
-
-- **CPU/Power**: tuned, tuned-utils, powertop, thermald, kernel-tools, hwloc, cpuid
-- **GPU AMD**: mesa-vulkan-drivers, mesa-va-drivers, mesa-vdpau-drivers, libva-utils, vulkan-tools, radeontop
-- **GPU NVIDIA**: akmod-nvidia, xorg-x11-drv-nvidia-cuda, nvidia-vaapi-driver, nvtop
-- **Memory**: zram-generator, earlyoom, numactl, preload
-- **Network**: irqbalance, ethtool, iperf3, iproute-tc
-- **Gaming**: gamemode, gamescope, mangohud, libdecor
-- **Build Tools**: git, cmake, ninja-build, vulkan-headers, various -devel packages
-- **Monitoring**: htop, btop, iotop, glxinfo
-- **Codecs**: ffmpeg, gstreamer1-plugins-bad-free, gstreamer1-plugins-good, gstreamer1-plugins-ugly, gstreamer1-plugin-libav
-- **Developer**: gcc, gcc-c++, clang, llvm, rust, cargo, go, zig, nasm, make, gdb, valgrind, strace, perf
-- **Cross-Platform**: wine, wine-common, mingw64-gcc, mingw32-gcc
-- **Virtualization**: qemu-kvm, libvirt, virt-manager, virt-install
-- **Security**: firewalld, audit, audit-libs
+Each backup includes a manifest, metadata, individual file backups, and a tarball.
 
 ---
 
 ## Safety and Stability
 
-- **Safe Defaults**: All settings are conservative and well-tested
-- **Reversible**: Full backup created before any changes
-- **No Kernel Patches**: Uses standard kernel features only
-- **Update Safe**: Will not break system updates
-- **Idempotent**: Safe to run multiple times
-- **Error Handling**: Script uses `set -euo pipefail` for safety
+- **Deferred Activation**: All system tuning changes apply after reboot, not live
+- **Manifest-Based Backup**: Per-file backup with timestamped run-ids
+- **Rollback**: `./main.sh --rollback <run-id>` restores any previous state
+- **Dangerous File Cleanup**: Removes known-problematic files from previous runs at startup
+- **BLS-Aware Boot**: GRUB and boot verification aware of BLS (Boot Loader Specification)
+- **Configuration Validation**: Validates GRUB, sysctl, modprobe syntax before applying
+- **GRUB Interrupt Safety**: Automatic GRUB backup restore if script is interrupted during critical boot configuration changes
+- **Hardware Auto-Detection**: Adapts to actual CPU features (VMX, AVX-512, instruction sets) — does not assume exact i9-9900 match
+- **Error Handling**: `set -euo pipefail` with trap handlers, automatic rollback on fatal errors
+- **Script Isolation**: Self-contained — no external optimization scripts sourced
 
 ---
 
-## Logs and Backup
+## Requirements
 
-- **Installation Log**: `/var/log/fedora-optimizer.log`
-- **Backup Location**: `/var/backup/fedora-optimizer/`
-- **CPU Topology Map**: `/var/log/cpu-topology.txt` (if hwloc installed)
-
----
-
-## Expected Results
-
-After running and rebooting:
-
-- Faster application launches (preload + optimized caching)
-- Smoother gaming with proper GPU selection and FSR upscaling
-- Better multitasking under heavy load (cgroups + scheduler tuning)
-- Lower idle power consumption (ASPM + runtime PM)
-- Improved network throughput (BBR + buffer tuning)
-- Faster storage I/O (appropriate schedulers + TRIM)
-- Quieter operation when idle (dynamic power management)
-- Frame generation capability (LSFG-VK)
-- Magpie-like upscaling on Linux (Gamescope + FSR/NIS)
-- Complete development environment (GCC, Rust, Go, Wine, MinGW)
-- Virtualization ready (KVM, QEMU, virt-manager)
-- Enhanced security (firewall, SELinux, SSH hardening)
-- Improved desktop responsiveness (GNOME/Wayland optimizations)
+- **Fedora Linux 43** (enforced at runtime)
+- Root privileges for system optimization (`sudo`)
+- Internet connection for package installation
 
 ---
 
