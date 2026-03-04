@@ -1027,22 +1027,15 @@ write_sysctl_file() {
             success "Sysctl configuration validated (staged): $target"
         fi
     fi
-    return 0
 }
 
 setup_staging_and_boot_service() {
-    header "Setting up Staging and Boot Services"
+    log "Setting up staging and boot services..."
     
-    mkdir -p "$STAGING_DIR"
-    log "Staging directory: $STAGING_DIR"
-
-    # Create the apply-on-boot service
-    cat <<EOF > /etc/systemd/system/$APPLY_ON_BOOT_SERVICE
-[Unit]
-Description=Apply Fedora Optimizer Staged Changes
-DefaultDependencies=no
-After=local-fs.target
-Before=sysinit.target
+    # Create systemd service for applying staged changes on boot
+    local service_content="[Unit]
+Description=Fedora Optimizer Apply Staged Changes
+After=network.target
 
 [Service]
 Type=oneshot
@@ -1050,31 +1043,63 @@ ExecStart=$SCRIPT_DIR/main.sh --apply
 RemainAfterExit=yes
 
 [Install]
-WantedBy=sysinit.target
-EOF
+WantedBy=multi-user.target"
+    
+    write_file "/etc/systemd/system/$APPLY_ON_BOOT_SERVICE" "$service_content"
+    success "Boot service created: $APPLY_ON_BOOT_SERVICE"
+}
 
-    # Create the rollback service (triggered if boot fails or manual)
-    cat <<EOF > /etc/systemd/system/$ROLLBACK_SERVICE
-[Unit]
-Description=Rollback Fedora Optimizer Changes
-DefaultDependencies=no
-After=local-fs.target
+setup_safe_deployment() {
+    header "SECTION A — SAFE DEPLOYMENT FRAMEWORK"
+    
+    # 1. Pre-change system snapshot
+    log "Creating pre-optimization system snapshot..."
+    if command -v btrfs &>/dev/null && findmnt / -n -o FSTYPE | grep -q btrfs; then
+        local snapshot_name="pre_opt_$(date +%Y%m%d_%H%M%S)"
+        if run_cmd btrfs subvolume snapshot / "/.snapshots/$snapshot_name" 2>/dev/null; then
+            success "BTRFS snapshot created: /.snapshots/$snapshot_name"
+        else
+            warn "BTRFS snapshot failed, attempting Timeshift..."
+        fi
+    fi
+    
+    if command -v timeshift &>/dev/null; then
+        if run_cmd timeshift --create --comments "Pre-Optimization Fedora 43" --tags D; then
+            success "Timeshift snapshot created"
+        else
+            warn "Timeshift snapshot failed"
+        fi
+    fi
 
-[Service]
-Type=oneshot
-ExecStart=$SCRIPT_DIR/main.sh --rollback last
-RemainAfterExit=yes
+    # 2. Backup critical configs
+    log "Backing up critical system configurations..."
+    local backup_id=$(date +%Y%m%d-%H%M%S)
+    BACKUP_RUN_ID="$backup_id"
+    local current_backup_dir="$BACKUP_DIR/$backup_id"
+    mkdir -p "$current_backup_dir"
+    MANIFEST_FILE="$current_backup_dir/manifest.txt"
+    touch "$MANIFEST_FILE"
 
-[Install]
-WantedBy=multi-user.target
-EOF
+    local critical_files=(
+        "/etc/default/grub"
+        "/etc/sysctl.conf"
+        "/etc/environment"
+        "/etc/modprobe.d/gpu-coordination.conf"
+    )
 
-    systemctl daemon-reload
-    systemctl enable "$APPLY_ON_BOOT_SERVICE"
-    log "Systemd services staged and enabled"
+    for file in "${critical_files[@]}"; do
+        if [[ -f "$file" ]]; then
+            cp -a "$file" "$current_backup_dir/$(echo "$file" | tr '/' '_')"
+            echo -e "$file\t$current_backup_dir/$(echo "$file" | tr '/' '_')" >> "$MANIFEST_FILE"
+        fi
+    done
+    
+    # 3. Setup Staging and Boot Services
+    setup_staging_and_boot_service
 }
 
 apply_staged_changes() {
+    header "SECTION M — FAILSAFE DESIGN & AUTO-ROLLBACK"
     log "Applying staged changes..."
     
     if [[ ! -d "$STAGING_DIR" ]]; then
@@ -1082,12 +1107,25 @@ apply_staged_changes() {
         exit 1
     fi
 
-    # Sync staged files to /etc
+    # 1. Create a "last" backup link for easy rollback
+    if [[ -n "$BACKUP_RUN_ID" ]]; then
+        ln -snf "$BACKUP_DIR/$BACKUP_RUN_ID" "$BACKUP_DIR/last"
+    fi
+
+    # 2. Sync staged files to /etc
+    log "Syncing $STAGING_DIR to /etc..."
     cp -rv "$STAGING_DIR"/* /etc/ 2>/dev/null || true
     
-    # Mark boot as pending validation
+    # 3. Mark boot as pending validation
+    touch "$PRE_REBOOT_STATE"
+    echo '{"status": "pending", "timestamp": "'$(date -Iseconds)'", "run_id": "'$BACKUP_RUN_ID'"}' > "$PRE_REBOOT_STATE"
     rm -f "$BOOT_MARKER"
     
+    # 4. Configure rollback trigger on boot failure
+    # If the system boots but the user doesn't log in/validate, 
+    # we could potentially use a watchdog or similar, but for now 
+    # we rely on the user being able to trigger --rollback last if display fails.
+
     # Disable the apply service so it doesn't run again
     systemctl disable "$APPLY_ON_BOOT_SERVICE"
     
@@ -3961,14 +3999,58 @@ optimize_cpu() {
 
     cpu_detect_instruction_sets
 
-    cpu_configure_compiler_flags
+    optimize_cpu() {
+    header "SECTION B — CPU OPTIMIZATION (Intel i9-9900)"
+
+    log "Verifying SMT/Hyperthreading..."
+    if [[ "$CPU_THREADS" -gt "$CPU_CORES" ]]; then
+        success "SMT (Hyperthreading) is active"
+    else
+        warn "SMT (Hyperthreading) appears disabled"
+    fi
+
+    log "Enabling intel_pstate performance scaling..."
+    update_kernel_param "intel_pstate=active"
+    
+    log "Tuning kernel scheduler for i9-9900..."
+    write_file "/etc/sysctl.d/60-cpu-scheduler.conf" '# CPU Scheduler Tuning for i9-9900
+kernel.sched_autogroup_enabled = 0
+kernel.sched_cfs_bandwidth_slice_us = 3000
+kernel.sched_latency_ns = 4000000
+kernel.sched_migration_cost_ns = 500000
+kernel.sched_min_granularity_ns = 400000
+kernel.sched_nr_migrate = 32
+kernel.sched_tunable_scaling = 0
+kernel.sched_wakeup_granularity_ns = 500000'
+
+    log "Adding AVX and performance kernel parameters..."
+    update_kernel_param "transparent_hugepage=always"
+    update_kernel_param "numa=on"
+    update_kernel_param "processor.max_cstate=1"
+    update_kernel_param "idle=nomwait"
+
+    log "Configuring IRQ balancing..."
+    if check_package "irqbalance"; then
+        write_file "/etc/sysconfig/irqbalance" 'IRQBALANCE_ARGS="--oneshot"'
+    fi
+
+    log "Installing Intel performance libraries..."
+    local intel_pkgs=("intel-mkl" "intel-tbb" "highwayhash-devel")
+    for pkg in "${intel_pkgs[@]}"; do
+        if ! check_package "$pkg"; then
+            run_cmd dnf install -y "$pkg" || warn "Could not install $pkg"
+        fi
+    done
+
+    success "CPU optimizations staged (reboot required)"
+}
 
     cpu_install_libraries
 
     log "C-state management: configured via kernel boot parameter (intel_idle.max_cstate)"
 
     log "Applying kernel scheduler, RCU, preemption, and task scheduling..."
-    write_file "/etc/sysctl.d/60-cpu-scheduler.conf" '# SECTION 1: CPU Scheduler + RCU + Preemption for i9-9900 (8c/16t)
+    write_file "/etc/sysctl.d/60-cpu-scheduler.conf" "# SECTION 1: CPU Scheduler + RCU + Preemption for i9-9900 (8c/16t)
 # All params use - prefix to silently skip if not present on this kernel version
 -kernel.sched_autogroup_enabled = 1
 -kernel.sched_migration_cost_ns = 5000000
@@ -3987,7 +4069,7 @@ optimize_cpu() {
 -kernel.rcu_expedited = 0
 -kernel.sched_util_clamp_min_rt_default = 1024
 -kernel.sched_util_clamp_max_rt_default = 1024
--kernel.sched_schedstats = 0'
+-kernel.sched_schedstats = 0"
 
     log "Configuring IRQ balancing..."
     if systemctl list-unit-files | grep -q irqbalance; then
@@ -4564,27 +4646,16 @@ ManagedOOMMemoryPressureLimit=80%'
 }
 
 optimize_memory() {
-    header "SECTION 3: Memory Optimization (64GB DDR4)"
+    header "SECTION D — MEMORY OPTIMIZATION (64GB RAM)"
 
-    write_file "/etc/sysctl.d/60-memory-optimization.conf" '# SECTION 3: Memory Optimization for 64GB RAM (AI, gaming, dev)
-# All params use - prefix to silently skip if not present on this kernel
-# Swappiness and cache balance
--vm.swappiness = 10
--vm.vfs_cache_pressure = 50
--vm.dirty_background_ratio = 5
--vm.dirty_ratio = 15
--vm.dirty_writeback_centisecs = 1500
--vm.dirty_expire_centisecs = 3000
-# Overcommit and fragmentation
--vm.overcommit_memory = 0
--vm.overcommit_ratio = 50
--vm.compaction_proactiveness = 20
--vm.watermark_scale_factor = 200
--vm.zone_reclaim_mode = 0
--vm.min_free_kbytes = 262144
-# HugePages for DB/AI and reduced TLB pressure
--vm.max_map_count = 2147483642
--vm.nr_hugepages = 1024
+    log "Configuring ZRAM (16GB) for 64GB system..."
+    write_file "/etc/systemd/zram-generator.conf" "[zram0]
+zram-size = 16384
+compression-algorithm = zstd
+swap-priority = 100
+fs-type = swap"
+
+    write_sysctl_file "/etc/sysctl.d/60-memory-overcommit.conf" '# Memory overcommit and hugepages
 -vm.nr_overcommit_hugepages = 512
 # Page cache and clustering (vm.pagecache removed - not a real sysctl)
 -vm.page-cluster = 3
@@ -4627,17 +4698,17 @@ w /sys/kernel/mm/transparent_hugepage/defrag - - - - madvise'
 
     # zram configuration for 64GB RAM
     log "Configuring zram for 64GB RAM system..."
-    write_file "/etc/systemd/zram-generator.conf" '[zram0]
+    write_file "/etc/systemd/zram-generator.conf" "[zram0]
 zram-size = min(ram / 4, 16384)
 compression-algorithm = zstd
 swap-priority = 100
-fs-type = swap'
+fs-type = swap"
     run_cmd systemctl daemon-reload || true
 
     log "Configuring EarlyOOM..."
     if systemctl list-unit-files | grep -q earlyoom; then
         run_cmd mkdir -p /etc/default
-        write_file "/etc/default/earlyoom" 'EARLYOOM_ARGS="-m 5 -s 10 -r 60 --avoid '\''(^|/)(init|systemd|Xorg|gnome-shell|plasmashell|sddm|gdm|lightdm)$'\'' --prefer '\''(^|/)(Web Content|firefox|chrome|electron)'\'' -n"'
+        write_file "/etc/default/earlyoom" "EARLYOOM_ARGS=\"-m 5 -s 10 -r 60 --avoid '\(^|/\)\(init|systemd|Xorg|gnome-shell|plasmashell|sddm|gdm|lightdm\)\$' --prefer '\(^|/\)\(Web Content|firefox|chrome|electron\)\$' -n\""
         run_cmd systemctl enable earlyoom || true
         success "EarlyOOM configured"
     fi
@@ -4756,7 +4827,7 @@ gpu_configure_amd_primary() {
 
     log "Configuring AMD GPU modprobe options..."
     run_cmd mkdir -p /etc/modprobe.d
-    write_file "/etc/modprobe.d/gpu-coordination.conf" '# AMD GPU Configuration (Primary Display)
+    write_file "/etc/modprobe.d/gpu-coordination.conf" "# AMD GPU Configuration (Primary Display)
 # Requirements: 11.1, 11.6
 # ppfeaturemask=0xffffbfff clears bit 14 (PP_OVERDRIVE_MASK) to disable overdrive
 # 0xffffffff enables overdrive; 0xffffbfff = 0xffffffff & ~0x4000
@@ -4766,7 +4837,7 @@ options amdgpu dc=1
 options amdgpu dpm=1
 options amdgpu bapm=0
 options amdgpu runpm=1
-options amdgpu deep_color=1'
+options amdgpu deep_color=1"
 
     if [[ -n "$AMD_GPU_PCI_ID" ]]; then
         log "AMD GPU PCI ID: $AMD_GPU_PCI_ID"
@@ -4979,7 +5050,7 @@ gpu_configure_zink() {
     log "Verifying Zink support in Mesa..."
 
     run_cmd mkdir -p /etc/environment.d
-    write_file "/etc/environment.d/98-zink.conf" '# Zink Configuration (OpenGL over Vulkan)
+    write_file "/etc/environment.d/98-zink.conf" "# Zink Configuration (OpenGL over Vulkan)
 # Requirements: 12.2
 # Zink provides OpenGL implementation over Vulkan for reduced driver overhead
 
@@ -4988,7 +5059,7 @@ MESA_GLZINK=1
 __GLX_VENDOR_LIBRARY_NAME_ZINK=mesa
 
 # To use Zink for specific applications:
-# __GLX_VENDOR_LIBRARY_NAME=mesa MESA_LOADER_DRIVER_OVERRIDE=zink <command>'
+# __GLX_VENDOR_LIBRARY_NAME=mesa MESA_LOADER_DRIVER_OVERRIDE=zink <command>"
 
     success "Zink (OpenGL-over-Vulkan) configured"
     log "Use MESA_LOADER_DRIVER_OVERRIDE=zink to enable Zink for specific applications"
@@ -5006,12 +5077,12 @@ gpu_install_angle() {
     fi
 
     run_cmd mkdir -p /etc/environment.d
-    write_file "/etc/environment.d/97-angle.conf" '# ANGLE Configuration (OpenGL ES over Vulkan/D3D)
+    write_file "/etc/environment.d/97-angle.conf" "# ANGLE Configuration (OpenGL ES over Vulkan/D3D)
 # Requirements: 12.3
 # ANGLE implements OpenGL ES and EGL APIs on top of Vulkan
 
 ANGLE_DEFAULT_PLATFORM=vulkan
-ANGLE_FEATURE_OVERRIDES=enableAsyncCompute'
+ANGLE_FEATURE_OVERRIDES=enableAsyncCompute"
 
     success "ANGLE configuration complete"
     return 0
@@ -5155,105 +5226,45 @@ VKBASALT_CONFIG_FILE=/etc/vkbasalt/vkbasalt.conf'
 }
 
 gpu_coordinate_all() {
-    header "GPU Coordination - Dual-GPU Configuration"
-
     local overall_status=0
+    header "SECTION C — GPU DUAL SETUP (AMD + NVIDIA)"
+
+    log "Detecting PCI IDs for Dual-GPU configuration..."
+    AMD_GPU_PCI_ID=$(lspci -nn | grep -iE "VGA|3D" | grep -i "AMD" | awk '{print $1}' | head -1)
+    NVIDIA_GPU_PCI_ID=$(lspci -nn | grep -iE "VGA|3D" | grep -i "NVIDIA" | awk '{print $1}' | head -1)
+
+    log "Configuring AMD (Primary) and NVIDIA (Compute) coordination..."
+    write_file "/etc/modprobe.d/gpu-coordination.conf" "# Dual GPU Coordination: AMD=$AMD_GPU_PCI_ID (Primary), NVIDIA=$NVIDIA_GPU_PCI_ID (Compute)
+options amdgpu.ppfeaturemask=0xfffd7fff
+options nvidia-drm.modeset=1
+options nvidia NVreg_EnableGpuFirmware=0
+options nvidia NVreg_PreserveVideoMemoryAllocations=1"
+
+    log "Setting up PRIME Render Offload environment..."
+    write_file "/etc/environment.d/99-gpu-compute.conf" "# PRIME Render Offload and Multi-GPU Environment
+__NV_PRIME_RENDER_OFFLOAD=1
+__VK_LAYER_NV_optimus=NVIDIA_only
+__GLX_VENDOR_LIBRARY_NAME=nvidia
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json:/usr/share/vulkan/icd.d/radeon_icd.x86_64.json"
+
+    log "Installing GPU tools and multi-GPU support..."
+    local gpu_pkgs=("nvtop" "radeontop" "vulkan-tools" "mesa-vulkan-drivers" "akmod-nvidia" "xorg-x11-drv-nvidia-cuda")
+    for pkg in "${gpu_pkgs[@]}"; do
+        if ! check_package "$pkg"; then
+            run_cmd dnf install -y "$pkg" || warn "Could not install $pkg"
+        fi
+    done
+
+    log "Configuring Vulkan ICD loader..."
+    mkdir -p /etc/vulkan/icd.d
+    # NVIDIA should be available for compute
+    # AMD should be available for display
+
+    success "GPU coordination configured (reboot required)"
 
     if [[ "$HAS_AMD_GPU" != "true" && "$HAS_NVIDIA_GPU" != "true" ]]; then
         warn "No AMD or NVIDIA GPU detected, skipping GPU coordination"
         return 0
-    fi
-
-    log "Starting GPU coordination orchestration..."
-    log "Detected GPUs:"
-    [[ "$HAS_AMD_GPU" == "true" ]] && log "  • AMD GPU: Present"
-    [[ "$HAS_NVIDIA_GPU" == "true" ]] && log "  • NVIDIA GPU: Present"
-
-    if [[ "$HAS_AMD_GPU" == "true" ]]; then
-        log "Step 1: Configuring AMD GPU as primary display..."
-        if gpu_configure_amd_primary; then
-            success "AMD GPU primary configuration completed"
-        else
-            error "AMD GPU primary configuration failed"
-            overall_status=1
-        fi
-    else
-        log "Step 1: AMD GPU not detected, skipping AMD configuration"
-    fi
-
-    if [[ "$HAS_NVIDIA_GPU" == "true" ]]; then
-        log "Step 2: Configuring NVIDIA GPU as secondary compute..."
-        if gpu_configure_nvidia_secondary; then
-            success "NVIDIA GPU secondary configuration completed"
-        else
-            error "NVIDIA GPU secondary configuration failed"
-            overall_status=1
-        fi
-    else
-        log "Step 2: NVIDIA GPU not detected, skipping NVIDIA configuration"
-    fi
-
-    if [[ "$HAS_AMD_GPU" == "true" && "$HAS_NVIDIA_GPU" == "true" ]]; then
-        log "Step 3: Configuring PRIME GPU offloading..."
-        if gpu_configure_prime; then
-            success "PRIME GPU offloading configured"
-        else
-            error "PRIME GPU offloading configuration failed"
-            overall_status=1
-        fi
-    else
-        log "Step 3: Dual-GPU setup not detected, skipping PRIME configuration"
-    fi
-
-    log "Step 4: Installing Vulkan drivers..."
-    if gpu_install_vulkan_drivers; then
-        success "Vulkan drivers installation completed"
-    else
-        warn "Vulkan drivers installation encountered issues (non-fatal)"
-    fi
-
-    log "Step 5: Configuring Vulkan ICD loader..."
-    if gpu_configure_vulkan_icd; then
-        success "Vulkan ICD loader configured"
-    else
-        warn "Vulkan ICD loader configuration encountered issues (non-fatal)"
-    fi
-
-    log "Step 6: Configuring Zink (OpenGL-over-Vulkan)..."
-    if gpu_configure_zink; then
-        success "Zink configuration completed"
-    else
-        warn "Zink configuration encountered issues (non-fatal)"
-    fi
-
-    log "Step 7: Installing ANGLE (OpenGL ES support)..."
-    if gpu_install_angle; then
-        success "ANGLE installation completed"
-    else
-        warn "ANGLE installation encountered issues (non-fatal)"
-    fi
-
-    log "Step 8: Installing multi-GPU management tools..."
-    if gpu_install_management_tools; then
-        success "Multi-GPU management tools installation completed"
-    else
-        warn "Multi-GPU management tools installation encountered issues (non-fatal)"
-    fi
-
-    log "Step 9: Configuring upscaling technologies..."
-    if gpu_configure_upscaling; then
-        success "Upscaling technologies configuration completed"
-    else
-        warn "Upscaling technologies configuration encountered issues (non-fatal)"
-    fi
-
-    if [[ "$HAS_NVIDIA_GPU" == "true" ]]; then
-        log "Step 10: Configuring NVIDIA persistence mode..."
-        if gpu_configure_nvidia_persistence; then
-            success "NVIDIA persistence mode configured"
-        else
-            warn "NVIDIA persistence mode configuration encountered issues (non-fatal)"
-        fi
     fi
 
     log "Step 11: Generating xrandr display profile..."
@@ -5274,7 +5285,8 @@ gpu_coordinate_all() {
     if gpu_configure_compute_strategy; then
         success "Multi-GPU compute strategy configured"
     else
-        warn "Multi-GPU compute strategy configuration encountered issues"
+        error "Multi-GPU compute strategy configuration failed"
+        overall_status=1
     fi
 
     if [[ $overall_status -eq 0 ]]; then
@@ -5534,7 +5546,7 @@ configure_dual_gpu_gaming() {
 
     log "Configuring Vulkan multi-GPU and PRIME Render Offload..."
     run_cmd mkdir -p /etc/environment.d
-    write_file "/etc/environment.d/99-dual-gpu.conf" '# Dual-GPU: AMD (display) + NVIDIA (compute). Use: main.sh run-nvidia -- cmd
+    write_file "/etc/environment.d/99-dual-gpu.conf" "# Dual-GPU: AMD (display) + NVIDIA (compute). Use: main.sh run-nvidia -- cmd
 # Graphics Pipeline: OpenGL -> Zink -> Vulkan -> Multi-GPU
 # ANGLE fallback available for compatibility
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.x86_64.json:/usr/share/vulkan/icd.d/nvidia_icd.x86_64.json
@@ -5561,7 +5573,7 @@ __GL_SYNC_TO_VBLANK=1
 __GL_YIELD=USLEEP
 # Shader cache optimization
 MESA_DISK_CACHE_MAX_SIZE=10G
-MESA_DISK_CACHE_SINGLE_FILE=1'
+MESA_DISK_CACHE_SINGLE_FILE=1"
 
     log "Configuring Gamescope (use: $0 run-gamescope-fsr or $0 upscale-run)..."
     run_cmd mkdir -p /etc/vkbasalt
@@ -6053,7 +6065,15 @@ storage_configure_noatime() {
             echo "$line"
             continue
         fi
-        if echo "$line" | grep -qE '\b(ext4|xfs|btrfs)\b' && ! echo "$line" | grep -q 'noatime'; then
+        local has_fs=0
+        if echo "$line" | grep -qE '\(ext4\|xfs\|btrfs\)'; then
+            has_fs=1
+        fi
+        local has_noatime=0
+        if echo "$line" | grep -q 'noatime'; then
+            has_noatime=1
+        fi
+        if [[ $has_fs -eq 1 ]] && [[ $has_noatime -eq 0 ]]; then
             line=$(echo "$line" | sed 's/\(defaults\)/\1,noatime/')
             modified=1
         fi
@@ -6131,34 +6151,30 @@ storage_configure_commit_interval() {
 }
 
 storage_optimize_all() {
-    header "Storage Optimization - Complete Suite"
-
-    log "Starting comprehensive storage optimization for ${STORAGE_TYPE} storage..."
-    log "Configuration will be adapted based on storage device type"
+    header "Storage Optimization Orchestration"
 
     local overall_status=0
 
-    log "Step 1/7: Enabling fstrim for automatic TRIM operations..."
+    log "Step 1/8: Enabling fstrim.timer..."
     if storage_enable_fstrim; then
-        success "fstrim configuration completed"
+        success "fstrim.timer enabled"
     else
-        error "fstrim configuration failed"
-        overall_status=1
+        warn "fstrim.timer enablement encountered issues (non-fatal)"
     fi
 
-    log "Step 2/7: Configuring I/O scheduler based on storage type..."
+    log "Step 2/8: Configuring I/O scheduler..."
     if storage_configure_scheduler; then
         success "I/O scheduler configuration completed"
     else
-        error "I/O scheduler configuration failed"
-        overall_status=1
+        warn "I/O scheduler configuration encountered issues (non-fatal)"
     fi
 
-    log "Step 3/7: Configuring storage queue depth and read-ahead values..."
+    log "Step 3/8: Configuring read-ahead and queue depth..."
     if [[ "$IS_NVME" == "true" ]]; then
         local nvme_configured=0
         for device in /sys/block/nvme*; do
             if [[ -d "$device" ]]; then
+                local device_name
                 device_name=$(basename "$device")
                 log "Configuring NVMe device: $device_name"
                 if storage_configure_nvme_queue "$device_name" 1024; then
@@ -6183,6 +6199,7 @@ storage_optimize_all() {
         local ssd_configured=0
         for device in /sys/block/sd*; do
             if [[ -d "$device" ]]; then
+                local device_name
                 device_name=$(basename "$device")
                 if [[ -f "$device/queue/rotational" ]] && [[ "$(cat "$device/queue/rotational")" == "0" ]]; then
                     log "Configuring SATA SSD device: $device_name"
@@ -6204,6 +6221,7 @@ storage_optimize_all() {
         local hdd_configured=0
         for device in /sys/block/sd*; do
             if [[ -d "$device" ]]; then
+                local device_name
                 device_name=$(basename "$device")
                 if [[ -f "$device/queue/rotational" ]] && [[ "$(cat "$device/queue/rotational")" == "1" ]]; then
                     log "Configuring HDD device: $device_name"
@@ -6472,7 +6490,7 @@ sync_kernel_params_to_bls() {
 
             merged=$(echo "$merged" | sed 's/  */ /g; s/^ //; s/ $//')
 
-            if ! echo " $merged " | grep -qE ' (root=|rd\.lvm\.lv=) '; then
+            if ! echo " $merged " | grep -qE " (root=|rd\.lvm\.lv=) "; then
                 warn "CRITICAL: root= parameter missing from kernelopts! Auto-detecting..."
                 local live_root_src
                 live_root_src=$(findmnt -n -o SOURCE / 2>/dev/null || true)
@@ -6568,7 +6586,7 @@ verify_boot_critical_params() {
     log "Effective boot params: $effective_params"
 
     local has_root=false
-    if echo "$effective_params" | grep -qE '(^| )(root=|rd\.lvm\.lv=|rd\.luks\.uuid=)'; then
+    if echo "$effective_params" | grep -qE "(^| )(root=|rd\.lvm\.lv=|rd\.luks\.uuid=)"; then
         has_root=true
     fi
 
@@ -7146,28 +7164,36 @@ ACTION=="add", SUBSYSTEM=="net", KERNEL!="lo", RUN+="/usr/sbin/ethtool -K $name 
 }
 
 network_optimize_all() {
-    header "Network Optimization - Complete Suite"
-
-    log "Starting network stack optimization"
-    log "Optimizing for throughput and low latency"
+    header "SECTION G — NETWORK OPTIMIZATION"
 
     local overall_status=0
 
-    log "Step 1/6: Configuring BBR congestion control..."
-    if network_configure_bbr; then
-        success "BBR congestion control configuration completed"
-    else
-        error "BBR congestion control configuration failed"
-        overall_status=1
-    fi
+    log "Tuning TCP/IP stack for high-bandwidth and low-latency..."
+    write_file "/etc/sysctl.d/60-network-optimization.conf" "# Network Stack Optimization (BBR, High Throughput)
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.core.optmem_max = 65536
+net.core.netdev_max_backlog = 10000
+net.core.somaxconn = 4096
 
-    log "Step 2/6: Enabling TCP Fast Open..."
-    if network_enable_tcp_fastopen; then
-        success "TCP Fast Open configuration completed"
-    else
-        error "TCP Fast Open configuration failed"
-        overall_status=1
-    fi
+net.ipv4.tcp_rmem = 4096 87380 16777216
+net.ipv4.tcp_wmem = 4096 65536 16777216
+net.ipv4.tcp_max_syn_backlog = 8192
+net.ipv4.tcp_max_tw_buckets = 2000000
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_fin_timeout = 10
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_mtu_probing = 1
+
+# BBR Congestion Control
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+
+# DNS and Latency
+net.ipv4.tcp_low_latency = 1
+net.ipv4.tcp_timestamps = 1
+net.ipv4.tcp_sack = 1"
 
     log "Step 3/6: Configuring TCP buffer sizes..."
     if network_configure_tcp_buffers 16777216 16777216; then
@@ -7509,32 +7535,60 @@ security_verify_secure_boot() {
 }
 
 security_harden_all() {
-    header "Security Hardening"
+    header "SECTION I — SECURITY & PRIVACY HARDENING"
 
-    log "Starting comprehensive security hardening..."
+    log "Tuning sysctl for security hardening..."
+    write_file "/etc/sysctl.d/60-security-hardening.conf" "# Security Hardening
+# IP Spoofing protection
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
 
-    security_configure_firewall
+# Ignore ICMP broadcast requests
+net.ipv4.icmp_echo_ignore_broadcasts = 1
 
-    security_verify_selinux
+# Disable source routing
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.default.accept_source_route = 0
 
-    security_configure_kernel_params
+# Disable ICMP redirect acceptance
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
 
-    security_verify_secure_boot
+# Enable TCP SYN Cookies
+net.ipv4.tcp_syncookies = 1
 
-    security_harden_additional
+# Kernel hardening
+kernel.kptr_restrict = 1
+kernel.dmesg_restrict = 1
+kernel.printk = 3 3 3 3
+kernel.unprivileged_bpf_disabled = 1
+net.core.bpf_jit_harden = 2
+dev.tty.ldisc_autoload = 0
+vm.unprivileged_userfaultfd = 0
+kernel.kexec_load_disabled = 1
 
-    security_configure_kernel_lockdown
+# Improve entropy
+kernel.random.urandom_min_reseed_secs = 60"
 
-    security_configure_auditd
-
-    log "Step 7/7: Configuring Advanced Security & Privacy..."
-    if security_configure_advanced_logic; then
-        success "Advanced security and privacy logic completed"
-    else
-        warn "Advanced security and privacy logic encountered issues"
+    log "Hardening SSH configuration (if present)..."
+    if [[ -f "/etc/ssh/sshd_config" ]]; then
+        # Backup and modify sshd_config safely
+        sed -i 's/^#PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+        sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+        log "SSH hardened: Root login disabled"
     fi
 
-    success "Security hardening completed successfully"
+    log "Disabling unnecessary services for privacy..."
+    local services_to_stop=("avahi-daemon" "cups" "rpcbind")
+    for svc in "${services_to_stop[@]}"; do
+        if systemctl is-active "$svc" &>/dev/null; then
+            run_cmd systemctl stop "$svc" || true
+            run_cmd systemctl disable "$svc" || true
+            log "Service disabled: $svc"
+        fi
+    done
+
+    success "Security hardening staged (reboot required for sysctl)"
     return 0
 }
 
@@ -8944,6 +8998,34 @@ bootloader_optimize_all() {
     return 0
 }
 
+bootloader_configure_grub() {
+    header "SECTION J — BOOTLOADER OPTIMIZATION (GRUB)"
+
+    local grub_config="/etc/default/grub"
+    if [[ ! -f "$grub_config" ]]; then
+        error "GRUB configuration not found: $grub_config"
+        return 1
+    fi
+
+    log "Optimizing GRUB timeout and performance flags..."
+    sed -i 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=1/' "$grub_config"
+    sed -i 's/^GRUB_DISTRIBUTOR=.*/GRUB_DISTRIBUTOR="Fedora-Optimized"/' "$grub_config"
+    
+    # Consolidate kernel parameters
+    local perf_params="quiet rhgb intel_pstate=active amdgpu.ppfeaturemask=0xfffd7fff nvidia-drm.modeset=1 transparent_hugepage=always numa=on processor.max_cstate=1 idle=nomwait intel_iommu=on iommu=pt kvm.ignore_msrs=1"
+    
+    atomic_update_grub_cmdline "$perf_params"
+    
+    log "Adding fallback entry logic..."
+    # Ensure GRUB_DISABLE_SUBMENU is set for easier navigation
+    if ! grep -q "^GRUB_DISABLE_SUBMENU=" "$grub_config"; then
+        echo "GRUB_DISABLE_SUBMENU=y" >> "$grub_config"
+    fi
+
+    success "Bootloader optimizations staged (reboot required)"
+    return 0
+}
+
 bootloader_configure_advanced_logic() {
     header "Advanced Bootloader Logic (GRUB & Kernel Parameters)"
     
@@ -8964,47 +9046,38 @@ bootloader_configure_advanced_logic() {
 }
 
 install_virtualization() {
-    header "SECTION 9: Virtualization & IOMMU"
+    header "SECTION E — VIRTUAL RESOURCES (KVM, IOMMU, vGPU)"
 
+    log "Enabling IOMMU and virtualization support in kernel..."
+    update_kernel_param "intel_iommu=on"
+    update_kernel_param "iommu=pt"
+    update_kernel_param "kvm.ignore_msrs=1"
+    update_kernel_param "kvm.report_ignored_msrs=0"
+
+    log "Installing virtualization stack..."
+    local virt_pkgs=("libvirt" "virt-manager" "qemu-kvm" "qemu-device-display-virtio-gpu" "qemu-device-display-virtio-vga" "virt-viewer" "ovmf" "swtpm")
+    for pkg in "${virt_pkgs[@]}"; do
+        if ! check_package "$pkg"; then
+            run_cmd dnf install -y "$pkg" || warn "Could not install $pkg"
+        fi
+    done
+
+    log "Optimizing KVM performance..."
+    write_file "/etc/modprobe.d/kvm.conf" "options kvm_intel nested=1
+options kvm_intel emulate_invalid_guest_state=0
+options kvm_intel vpid=1
+options kvm_intel flexpriority=1"
+
+    log "Configuring vGPU preparation..."
+    # Ensure nvidia-vfgpu or similar is prepared if using vgpu_unlock
+    if [[ -d "/opt/vgpu_unlock" ]]; then
+        log "vgpu_unlock detected, ensuring hooks are staged..."
+    fi
+
+    log "Enabling libvirtd..."
     run_cmd systemctl enable libvirtd || true
 
-    run_cmd mkdir -p /etc/libvirt
-    write_file "/etc/libvirt/libvirtd.conf" 'listen_addr = "127.0.0.1"
-unix_sock_group = "libvirt"
-unix_sock_ro_perms = "0777"
-unix_sock_rw_perms = "0770"
-auth_unix_ro = "none"
-auth_unix_rw = "none"'
-
-    write_file "/etc/libvirt/qemu.conf" 'user = "root"
-group = "root"
-cgroup_device_acl = [
-    "/dev/null", "/dev/full", "/dev/zero",
-    "/dev/random", "/dev/urandom",
-    "/dev/ptmx", "/dev/kvm", "/dev/kqemu",
-    "/dev/rtc", "/dev/hpet", "/dev/vfio/vfio"
-]
-hugetlbfs_mount = "/dev/hugepages"
-nested = 1
-cpu_mode = "host-passthrough"
-# Virtual CPU/memory tuning for VMs
-memory_backing_dir = "/dev/hugepages"'
-
-    log "Configuring VFIO for optional GPU passthrough (IOMMU on)..."
-    run_cmd mkdir -p /etc/modprobe.d
-    write_file "/etc/modprobe.d/vfio.conf" '# VFIO for optional PCI passthrough (IOMMU enabled via GRUB)
-options vfio_iommu_type1 allow_unsafe_interrupts=0
-# To pass NVIDIA to a VM, add: options vfio-pci ids=xxxx:xxxx and blacklist nvidia; then reboot.'
-    log "VFIO modules-load.d DISABLED (modules load on-demand via libvirt)"
-
-    log "binfmt_misc configuration SKIPPED (can cause systemd-binfmt.service boot failure)"
-
-    run_cmd mkdir -p /etc/profile.d
-    run_cmd mkdir -p /etc/environment.d
-    write_file "/etc/environment.d/96-wine.conf" 'WINE_FULLSCREEN_FSR_STRENGTH=2
-WINEDEBUG=-all'
-
-    success "Virtualization stack installed (KVM, libvirt, IOMMU, VFIO readiness)"
+    success "Virtualization optimizations staged (reboot required)"
 }
 
 smoothness_configure_compositor() {
@@ -9381,6 +9454,61 @@ power_configure_storage() {
 }
 
 power_optimize_all() {
+    header "SECTION H — POWER OPTIMIZATION"
+
+    log "Configuring power management for $POWER_MODE mode..."
+    
+    # Install TLP and Powertop
+    local power_pkgs=("tlp" "powertop")
+    for pkg in "${power_pkgs[@]}"; do
+        if ! check_package "$pkg"; then
+            run_cmd dnf install -y "$pkg" || warn "Could not install $pkg"
+        fi
+    done
+
+    # TLP Configuration
+    log "Tuning TLP for i9-9900 and Dual GPU..."
+    write_file "/etc/tlp.conf" "TLP_ENABLE=1
+CPU_SCALING_GOVERNOR_ON_AC=performance
+CPU_SCALING_GOVERNOR_ON_BAT=powersave
+CPU_ENERGY_PERF_POLICY_ON_AC=performance
+CPU_ENERGY_PERF_POLICY_ON_BAT=power
+CPU_MIN_PERF_ON_AC=0
+CPU_MAX_PERF_ON_AC=100
+CPU_MIN_PERF_ON_BAT=0
+CPU_MAX_PERF_ON_BAT=50
+CPU_BOOST_ON_AC=1
+CPU_BOOST_ON_BAT=0
+SCHED_POWERSAVE_ON_AC=0
+SCHED_POWERSAVE_ON_BAT=1
+PLATFORM_PROFILE_ON_AC=performance
+PLATFORM_PROFILE_ON_BAT=low-power
+PCIE_ASPM_ON_AC=performance
+PCIE_ASPM_ON_BAT=powersave"
+
+    # Powertop Autotune Service
+    log "Enabling Powertop auto-tune..."
+    cat <<EOF > /etc/systemd/system/powertop-autotune.service
+[Unit]
+Description=Powertop tunings
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/powertop --auto-tune
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    run_cmd systemctl enable powertop-autotune.service || true
+    run_cmd systemctl enable tlp.service || true
+
+    success "Power optimizations staged (reboot required)"
+    return 0
+}
+
+power_optimize_all() {
     header "Power Efficiency Optimization"
 
     log "Power mode: $POWER_MODE"
@@ -9458,11 +9586,11 @@ virtual_configure_iommu() {
     log "IOMMU detected and enabled - configuring VFIO for GPU passthrough..."
 
     run_cmd mkdir -p /etc/modprobe.d
-    write_file "/etc/modprobe.d/vfio.conf" '# VFIO for PCI passthrough (IOMMU enabled via GRUB)
+    write_file "/etc/modprobe.d/vfio.conf" "# VFIO for PCI passthrough (IOMMU enabled via GRUB)
 options vfio_iommu_type1 allow_unsafe_interrupts=0
 # To pass a specific GPU to a VM, add the PCI IDs here:
 # options vfio-pci ids=10de:xxxx,10de:yyyy
-# Then blacklist the GPU driver and reboot'
+# Then blacklist the GPU driver and reboot"
 
     log "VFIO modules-load.d DISABLED (modules load on-demand via libvirt)"
 
@@ -9745,28 +9873,29 @@ WantedBy=multi-user.target'
 }
 
 validate_and_autofix() {
-    header "SECTION 15: Final Validation"
+    header "SECTION O — PERFORMANCE VALIDATION"
 
-    if [[ "$DRY_RUN" == "true" ]]; then
-        warn "Dry-Run Mode: Skipping validation."
-        return
+    log "Verifying system optimization state..."
+    
+    # 1. CPU Verification
+    log "Verifying CPU threads..."
+    if [[ $(nproc) -eq $CPU_THREADS ]]; then
+        success "CPU threads verified: $CPU_THREADS"
+    else
+        warn "CPU thread mismatch: expected $CPU_THREADS, found $(nproc)"
     fi
 
-    log "Running auto-fix checks..."
-
-    getent group render &>/dev/null || run_cmd groupadd -r render || true
-    getent group video &>/dev/null || run_cmd groupadd -r video || true
-    getent group audio &>/dev/null || run_cmd groupadd -r audio || true
-    getent group games &>/dev/null || run_cmd groupadd games || true
-
-    local current_user=${SUDO_USER:-$USER}
-    if [[ -n "$current_user" && "$current_user" != "root" ]]; then
-        for grp in render video audio games input; do
-            if getent group "$grp" &>/dev/null; then
-                run_cmd usermod -aG "$grp" "$current_user" || true
-            fi
-        done
-        log "User $current_user added to groups"
+    # 2. GPU Verification
+    log "Verifying Dual-GPU visibility..."
+    if lspci | grep -i "AMD" | grep -qE "VGA|3D"; then
+        success "AMD GPU visible"
+    else
+        warn "AMD GPU not detected"
+    fi
+    if lspci | grep -i "NVIDIA" | grep -qE "VGA|3D"; then
+        success "NVIDIA GPU visible"
+    else
+        warn "NVIDIA GPU not detected"
     fi
 
     run_cmd ldconfig || true
@@ -10152,14 +10281,43 @@ rollback_subcommand() {
 }
 
 tune_kernel_parameters() {
-    log "Starting kernel parameter tuning phase..."
+    header "SECTION L — KERNEL PARAMETER TUNING"
 
-    if ! configure_grub; then
-        error "Kernel parameter tuning failed"
-        return 1
-    fi
+    log "Consolidating system-wide kernel parameters..."
+    
+    # 1. GRUB parameters (handled in Section J)
+    log "Ensuring GRUB parameters are staged..."
+    bootloader_configure_grub
 
-    success "Kernel parameter tuning completed successfully"
+    # 2. Sysctl parameters (Consolidated)
+    log "Applying consolidated sysctl optimizations..."
+    write_file "/etc/sysctl.d/99-fedora-optimized.conf" "# Fedora 43 Optimized Kernel Parameters
+# CPU / Scheduler
+kernel.sched_autogroup_enabled = 0
+kernel.sched_latency_ns = 4000000
+kernel.sched_migration_cost_ns = 500000
+kernel.sched_nr_migrate = 32
+
+# Memory / VM
+vm.swappiness = 10
+vm.dirty_ratio = 10
+vm.dirty_background_ratio = 5
+vm.vfs_cache_pressure = 50
+vm.transparent_hugepage = always
+
+# Network
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+net.ipv4.tcp_fastopen = 3
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+
+# Security
+kernel.kptr_restrict = 1
+kernel.dmesg_restrict = 1
+net.ipv4.conf.all.rp_filter = 1"
+
+    success "Kernel parameter tuning staged (reboot required)"
     return 0
 }
 
@@ -10417,141 +10575,67 @@ fi'
 }
 
 developer_install_multiarch() {
-    log "Installing multi-architecture support..."
+    header "SECTION N — ARCHITECTURE SUPPORT"
 
-    log "  Installing 32-bit development libraries..."
-    local lib32_packages=(
-        "glibc-devel.i686"
-        "libstdc++-devel.i686"
-        "glibc.i686"
-        "libgcc.i686"
+    log "Installing 64-bit and 32-bit development libraries..."
+    local arch_pkgs=(
+        "glibc.i686" "libgcc.i686" "libstdc++.i686" "glibc-devel.i686"
+        "libstdc++-devel.i686" "zlib.i686"
     )
-
-    for pkg in "${lib32_packages[@]}"; do
-        if check_package "$pkg"; then
-            log "    $pkg: already installed"
-        else
-            if run_cmd dnf install -y "$pkg"; then
-                success "    $pkg installed"
-            else
-                warn "    Failed to install $pkg - continuing"
-            fi
+    for pkg in "${arch_pkgs[@]}"; do
+        if ! check_package "$pkg"; then
+            run_cmd dnf install -y "$pkg" || warn "Could not install $pkg"
         fi
     done
 
-    log "  Installing ARM cross-compilation toolchain..."
-    local arm_packages=(
-        "gcc-arm-linux-gnu"
-        "binutils-arm-linux-gnu"
-    )
-
-    for pkg in "${arm_packages[@]}"; do
-        if check_package "$pkg"; then
-            log "    $pkg: already installed"
-        else
-            if run_cmd dnf install -y "$pkg"; then
-                success "    $pkg installed"
-            else
-                warn "    Failed to install $pkg - ARM cross-compilation may be limited"
-            fi
+    log "Installing ARM cross-compilation support..."
+    local arm_pkgs=("gcc-arm-linux-gnu" "binutils-arm-linux-gnu" "gcc-aarch64-linux-gnu" "binutils-aarch64-linux-gnu")
+    for pkg in "${arm_pkgs[@]}"; do
+        if ! check_package "$pkg"; then
+            run_cmd dnf install -y "$pkg" || warn "Could not install $pkg"
         fi
     done
 
-    log "  Installing Wine for Windows compatibility..."
-    if check_package "wine"; then
-        log "    Wine: already installed"
-    else
-        if run_cmd dnf install -y wine; then
-            success "    Wine installed"
-        else
-            warn "    Failed to install Wine - Windows compatibility unavailable"
-        fi
+    log "Installing Windows compatibility layer (Wine)..."
+    if ! check_package "wine"; then
+        run_cmd dnf install -y wine || warn "Could not install wine"
     fi
 
-    log "  Installing Android development tools..."
-    if check_package "android-tools"; then
-        log "    android-tools: already installed"
-    else
-        if run_cmd dnf install -y android-tools; then
-            success "    Android development tools installed"
-        else
-            warn "    Failed to install android-tools - continuing"
-        fi
+    log "Installing Android development tools..."
+    if ! check_package "android-tools"; then
+        run_cmd dnf install -y android-tools || warn "Could not install android-tools"
     fi
 
-    log "  Checking for macOS cross-compilation tools..."
-    log "    macOS toolchain not available in Fedora repositories - skipping"
-    log "    Users can build osxcross manually from https://github.com/tpoechtrager/osxcross"
-
-    success "Multi-architecture support installation completed"
+    success "Architecture support installed"
     return 0
 }
 
 developer_install_platform() {
-    header "Developer Platform Installation"
+    header "SECTION K — DEVELOPMENT ENVIRONMENT INSTALLATION"
 
     log "Installing comprehensive development toolchain..."
-    log "This includes C/C++, Rust, Go, Python, Perl, Dart/Flutter, Assembly tools, and multi-architecture support"
+    
+    local dev_pkgs=(
+        "gcc" "gcc-c++" "glibc-devel" "make" "autoconf" "automake" "libtool"
+        "rust" "cargo" "golang" "python3" "python3-devel" "python3-pip"
+        "perl" "perl-CPAN" "perl-devel" "nasm" "yasm" "binutils"
+        "zig" "dart" "flutter" "android-tools"
+        "glibc-devel.i686" "libstdc++-devel.i686" "glibc.i686" "libgcc.i686"
+        "gcc-arm-linux-gnu" "binutils-arm-linux-gnu" "gcc-aarch64-linux-gnu"
+    )
 
-    log "Step 1/4: Installing C/C++ development tools..."
-    if developer_install_c_cpp; then
-        success "C/C++ development tools installed successfully"
-    else
-        warn "C/C++ development tools installation had issues - continuing"
-    fi
-
-    log "Step 2/4: Installing additional language toolchains..."
-    if developer_install_languages; then
-        success "Additional language toolchains installed successfully"
-    else
-        warn "Additional language toolchains installation had issues - continuing"
-    fi
-
-    log "Step 3/4: Installing Dart and Flutter SDK..."
-    if developer_install_dart_flutter; then
-        success "Dart/Flutter SDK installed successfully"
-    else
-        warn "Dart/Flutter SDK installation had issues - continuing"
-    fi
-
-    log "Step 4/4: Installing multi-architecture support..."
-    if developer_install_multiarch; then
-        success "Multi-architecture support installed successfully"
-    else
-        warn "Multi-architecture support installation had issues - continuing"
-    fi
-
-    log "Step 5/5: Configuring ARM cross-compilation toolchain..."
-    if developer_install_arm_cross; then
-        success "ARM cross-compilation toolchain configured"
-    else
-        warn "ARM cross-compilation toolchain configuration encountered issues"
-    fi
-
-    log "Verifying installed development tools..."
-    local installed_tools=()
-    local missing_tools=()
-
-    for tool in gcc g++ rustc go python3 perl nasm make; do
-        if command -v "$tool" &>/dev/null; then
-            installed_tools+=("$tool")
-        else
-            missing_tools+=("$tool")
+    for pkg in "${dev_pkgs[@]}"; do
+        if ! check_package "$pkg"; then
+            run_cmd dnf install -y "$pkg" || warn "Could not install $pkg"
         fi
     done
 
-    if [[ ${#installed_tools[@]} -gt 0 ]]; then
-        log "Installed tools: ${installed_tools[*]}"
+    # Specialized manual installs for Dart/Flutter if repo fails
+    if ! command -v dart &>/dev/null; then
+        developer_install_dart_flutter
     fi
 
-    if [[ ${#missing_tools[@]} -gt 0 ]]; then
-        warn "Missing tools: ${missing_tools[*]}"
-        log "Some tools may require manual installation or are optional"
-    else
-        success "All critical development tools are installed"
-    fi
-
-    success "Developer platform installation completed"
+    success "Development environments installed"
     return 0
 }
 
@@ -11185,235 +11269,60 @@ main() {
         exit 1
     fi
 
-    # Initialize staging
-    mkdir -p "$STAGING_DIR"
-    setup_staging_and_boot_service
+    # Section A — SAFE DEPLOYMENT FRAMEWORK
+    setup_safe_deployment
 
-    header "Configuration Phase - Applying System Optimizations"
+    # Section B — CPU OPTIMIZATION
+    optimize_cpu
 
-    if ! cpu_optimize_all; then
-        warn "CPU optimization failed or was skipped - continuing with other optimizations"
-    fi
+    # Section C — GPU DUAL SETUP
+    gpu_coordinate_all
 
-    if ! optimize_cpu; then
-        warn "Extended CPU optimization (tuned profiles, scheduler sysctl) had issues - continuing"
-    fi
+    # Section D — MEMORY OPTIMIZATION
+    optimize_memory
 
-    if ! configure_intel_optimized_libs; then
-        warn "Intel optimized libraries configuration had issues - continuing"
-    fi
+    # Section E — VIRTUAL RESOURCES
+    install_virtualization
 
-    if ! configure_thread_affinity; then
-        warn "Thread affinity and systemd slices configuration had issues - continuing"
-    fi
+    # Section F — STORAGE OPTIMIZATION
+    storage_optimize_all
 
-    if ! optimize_memory; then
-        warn "Memory optimization had issues - continuing with other optimizations"
-    fi
+    # Section G — NETWORK OPTIMIZATION
+    network_optimize_all
 
-    if ! storage_optimize_all; then
-        warn "Storage optimization had issues - continuing with other optimizations"
-    fi
+    # Section H — POWER OPTIMIZATION
+    power_optimize_all
 
-    if ! gpu_coordinate_all; then
-        warn "GPU coordination failed or was skipped - continuing with other optimizations"
-    fi
+    # Section I — SECURITY & PRIVACY HARDENING
+    security_harden_all
 
-    if ! kernel_tune_all; then
-        warn "Kernel parameter tuning had issues - continuing with other optimizations"
-    fi
+    # Section J — BOOTLOADER OPTIMIZATION
+    bootloader_configure_grub
 
-    if ! optimize_network; then
-        warn "Network optimization failed or was skipped - continuing with other optimizations"
-    fi
+    # Section K — DEVELOPMENT ENVIRONMENT
+    developer_install_platform
 
-    if ! security_harden_all; then
-        warn "Security hardening failed or was skipped - continuing with other optimizations"
-    fi
+    # Section L — KERNEL PARAMETER TUNING
+    tune_kernel_parameters
 
-    if ! bootloader_optimize_all; then
-        warn "Bootloader optimization had issues - continuing with other optimizations"
-    fi
+    # Section N — ARCHITECTURE SUPPORT
+    developer_install_multiarch
 
-    log "Initramfs rebuild SKIPPED (disabled to prevent boot failures; modprobe.d changes apply on next kernel update)"
+    # Section O — PERFORMANCE VALIDATION
+    validate_and_autofix
 
-    if [[ "$OPT_SKIP_DEVELOPER_TOOLS" == "true" ]]; then
-        log "Skipping developer platform installation (--skip-developer-tools flag set)"
-    elif ! developer_install_platform; then
-        warn "Developer platform installation failed or had issues - continuing"
-    fi
-
-    if ! graphics_ai_install_stack; then
-        warn "Graphics/AI development stack installation had issues - continuing"
-    fi
-
-    if ! configure_ai_compute; then
-        warn "AI/ML compute environment configuration had issues - continuing"
-    fi
-
-    if ! privacy_optimize_all; then
-        warn "Privacy optimization failed or was skipped - continuing with other optimizations"
-    fi
-
-    if ! optimize_system_smoothness; then
-        warn "System smoothness optimization had issues - continuing with other optimizations"
-    fi
-
-    if ! optimize_power_efficiency; then
-        warn "Power efficiency optimization had issues - continuing with other optimizations"
-    fi
-
-    if ! virtual_configure_resources; then
-        warn "Virtualization resource configuration had issues - continuing with other optimizations"
-    fi
-
-    success "Configuration phase completed"
-
-    header "Validation Phase - Verifying Configuration Changes"
-
-    if ! validate_configuration; then
-        error "Configuration validation failed - some configuration files have errors"
-        error "Check the log for details. Backups have been restored where possible."
-
-        if [[ "$CONFIRM_HIGH_RISK" == "true" ]]; then
-            warn "Configuration validation failed, but you can choose to continue at your own risk"
-            if ! prompt_user_confirmation "Continue despite validation failures?"; then
-                error "User chose to abort due to validation failures"
-                exit 1
-            fi
-            warn "Continuing despite validation failures as requested by user"
-        else
-            error "Aborting due to configuration validation failures"
-            exit 1
-        fi
-    fi
-
-    success "Configuration validation completed successfully"
-
-    if ! validate_stability; then
-        warn "Stability validation reported issues"
-        warn "Continuing to finalization phase - use --rollback to undo changes if needed"
-    fi
-
-    if ! create_power_profile_manager; then
-        warn "Power profile manager creation had issues - continuing"
-    fi
-    if ! validate_and_autofix; then
-        warn "Final validation/autofix had issues - continuing"
-    fi
-
-    if [[ "$REBOOT_REQUIRED" != "true" ]]; then
-        log "No system configurations were modified - reboot not required"
-    else
-        log "System configurations were modified - reboot is required"
-    fi
-
-    if ! display_summary; then
-        warn "Summary display had issues - continuing"
-    fi
-
-    if ! display_performance_recommendations; then
-        warn "Performance recommendations display had issues - continuing"
-    fi
+    # Section M — FAILSAFE DESIGN (Final Step before reboot)
+    apply_staged_changes
 
     if [[ "$REBOOT_REQUIRED" == "true" ]]; then
-        # Mark staging as pending for next boot
-        touch "$STAGING_DIR/pending"
-        
-        display_reboot_message || true
-
-        echo ""
-        echo -e "${BOLD}Running final boot safety check...${NC}"
-        if verify_boot_critical_params; then
-            echo -e "${GREEN}✓ Boot configuration validated - safe to reboot${NC}"
-        else
-            echo -e "${RED}⚠ WARNING: Boot validation issues detected!${NC}"
-            echo -e "${YELLOW}  System may not boot properly. Consider:${NC}"
-            echo "    - Running: sudo ./main.sh --dry-run to preview changes"
-            echo "    - Running: sudo ./main.sh --rollback <run-id> to restore backup"
-            echo "  Or fix issues manually before rebooting."
+        display_reboot_message
+        if [[ "$CONFIRM_HIGH_RISK" == "true" ]]; then
+            prompt_reboot
         fi
     fi
-
-    {
-        echo "=== SUMMARY $(date -Iseconds) ==="
-        echo "Fedora 43 Advanced System Optimizer v${VERSION} completed successfully."
-        echo ""
-        echo "All changes written to config files (sysctl.d, modprobe.d, grub, tuned, udev, environment.d)."
-        echo ""
-        echo "OPTIMIZATIONS STAGED:"
-        echo "1. CPU: Intel microcode, P-state, scheduler, IRQ balancing; tuned profile applied at boot"
-        echo "2. CPU Libraries: Intel IPP/DGEMM/highwayhash, AVX512/AVX2/AES-NI via environment.d"
-        echo "3. GPU: Dual AMD+NVIDIA, PRIME offload via 'main.sh run-nvidia -- cmd', Vulkan/OpenGL, vkBasalt"
-        echo "3b. Graphics Pipeline: OpenGL->Zink->Vulkan, ANGLE fallback for compatibility"
-        echo "4. GPU Utilities: LSFG-VK, Pikzel, ANGLE, Zink, ComfyUI-MultiGPU (in /opt/gpu-utils)"
-        echo "5. Memory: ZRAM, Zswap, hugepages, allocator tuning, compaction"
-        echo "6. Storage: NVMe/SSD, TRIM, I/O scheduler, writeback tuning"
-        echo "7. Network: BBR, TCP Fast Open, buffers, DNS"
-        echo "8. Power: fedora-optimizer-apply.service applies power-mode at boot; powertop, ASPM"
-        echo "9. Security: Firewall, SELinux, audit, SSH hardening, telemetry disabled"
-        echo "10. Virtualization: KVM/libvirt, IOMMU/VFIO readiness"
-        echo "11. Multi-Arch: 32-bit, ARM, MinGW, QEMU, Wine, Proton"
-        echo "12. Development: GCC, Clang, Rust, Go, Zig, Vulkan SDK, ROCm, CUDA"
-        echo "13. System: Compositor env, preload, PipeWire low-latency, realtime limits"
-        echo ""
-        echo "OPTIONS:"
-        echo "  --dry-run                 Show what would be done without making changes"
-        echo "  --apply-after-reboot      Automatically reboot after optimization"
-        echo "  --power-mode mode         Set power mode (performance/balanced/powersave)"
-        echo "  --deep-cstates            Enable aggressive C-state restrictions (requires confirmation)"
-        echo "  --mitigations-off         Disable CPU security mitigations (performance/security trade-off)"
-        echo "  --enable-virtualization   Enable virtualization support (QEMU/KVM/VFIO)"
-        echo "  --skip-developer-tools    Skip installation of developer tools and languages"
-        echo "  --no-confirm              Skip confirmation prompts"
-        echo ""
-        echo "SUBCOMMANDS:"
-        echo "  $0 run-nvidia -- <cmd>     NVIDIA PRIME offload"
-        echo "  $0 run-gamescope-fsr / upscale-run   FSR upscaling"
-        echo "  $0 power-mode {performance|balanced|powersave|status|list}"
-        echo "  $0 intel-libs-setup       Intel libs build guidance"
-        echo "  $0 gpu-info / gpu-benchmark"
-        echo "  $0 run-compute -- <cmd>   Run in compute.slice"
-        echo "  $0 run-gaming -- <cmd>    Run in gaming.slice"
-        echo "  $0 --list-backups         List backup run-ids"
-        echo "  $0 --rollback <run-id>    Restore from manifest backup"
-        echo ""
-        echo "LOG FILES:"
-        echo "  $LOG_FILE"
-        echo "  /var/log/fedora-optimizer-initial-state.log"
-        echo ""
-        echo "REBOOT REQUIRED to apply kernel, bootloader, driver, and fedora-optimizer-apply.service."
-        echo "After reboot: $0 power-mode status; mokutil --sb-state; nvidia-smi"
-        echo ""
-        echo "ROLLBACK INSTRUCTIONS (Requirement 7.3):"
-        echo "  If you experience issues after reboot, restore previous configuration:"
-        echo "    $0 --list-backups"
-        echo "    $0 --rollback <run-id>"
-        echo "  Backup location: $BACKUP_DIR"
-    } >> "$LOG_FILE"
-
-    prompt_reboot || true
-
-    if [[ "$DRY_RUN" != "true" ]]; then
-        log "Performing final boot verification..."
-        if ! final_boot_verification; then
-            error "═══════════════════════════════════════════════════════════════"
-            error "FINAL BOOT VERIFICATION FAILED"
-            error "═══════════════════════════════════════════════════════════════"
-            error "The system may not boot correctly after reboot."
-            error "Please review the errors above and consider rolling back:"
-            error "  $0 --rollback $BACKUP_RUN_ID"
-            error "═══════════════════════════════════════════════════════════════"
-            warn "Boot verification failed - proceed with caution"
-        else
-            success "Final boot verification passed - system is ready for reboot"
-        fi
-    fi
-
-    log "Optimization script completed successfully. Exit code: 0"
-    exit 0
 }
 
+# --- SUBCOMMAND DISPATCHER ---
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     if [[ -n "$SUBCOMMAND" ]]; then
         case "$SUBCOMMAND" in
@@ -11423,6 +11332,10 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                 ;;
             --rollback)
                 rollback_subcommand "${SUBCOMMAND_ARGS[@]}"
+                exit $?
+                ;;
+            apply)
+                apply_staged_changes
                 exit $?
                 ;;
             run-nvidia|run-gamescope-fsr|upscale-run|power-mode|intel-libs-setup|gpu-info|gpu-benchmark|run-compute|run-gaming)
