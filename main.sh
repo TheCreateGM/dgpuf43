@@ -1049,6 +1049,10 @@ WantedBy=multi-user.target"
     success "Boot service created: $APPLY_ON_BOOT_SERVICE"
 }
 
+integrate_intel_performance_libraries() {
+    cpu_install_libraries
+}
+
 setup_safe_deployment() {
     header "SECTION A — SAFE DEPLOYMENT FRAMEWORK"
     
@@ -4642,6 +4646,44 @@ ManagedOOMMemoryPressureLimit=80%'
 
     success "systemd-oomd configured for proactive OOM handling"
     log "systemd-oomd will activate after reboot"
+    return 0
+}
+
+# Configure installed memory frameworks (tidesdb, java-memory-agent, caRamel)
+ram_configure_memory_frameworks() {
+    local mem_utils_dir="/opt/memory-utils"
+
+    log "Configuring installed memory frameworks..."
+
+    # Configure TidesDB
+    if [[ -d "$mem_utils_dir/tidesdb" ]]; then
+        log "Configuring TidesDB..."
+        run_cmd mkdir -p /etc/environment.d
+        write_file "/etc/environment.d/98-tidesdb.conf" '# TidesDB Configuration
+TIDESDB_PATH=/opt/memory-utils/tidesdb
+TIDESDB_CACHE_SIZE=4096
+TIDESDB_COMPRESSION=zstd'
+        success "TidesDB configured"
+    fi
+
+    # Configure Java Memory Agent
+    if [[ -d "$mem_utils_dir/java-memory-agent" ]]; then
+        log "Configuring Java Memory Agent..."
+        write_file "/etc/environment.d/98-java-memory.conf" '# Java Memory Agent Configuration
+JAVA_TOOL_OPTIONS=-javaagent:/opt/memory-utils/java-memory-agent/agent.jar
+JMA_ENABLED=true'
+        success "Java Memory Agent configured"
+    fi
+
+    # Configure caRamel
+    if [[ -d "$mem_utils_dir/caRamel" ]]; then
+        log "Configuring caRamel..."
+        write_file "/etc/environment.d/98-caramel.conf" '# caRamel Configuration
+CARAMEL_PATH=/opt/memory-utils/caRamel
+CARAMEL_THREADS=auto'
+        success "caRamel configured"
+    fi
+
     return 0
 }
 
@@ -11275,11 +11317,17 @@ main() {
     # Section B — CPU OPTIMIZATION
     optimize_cpu
 
+    # Integrate Intel performance libraries
+    integrate_intel_performance_libraries
+
     # Section C — GPU DUAL SETUP
     gpu_coordinate_all
 
     # Section D — MEMORY OPTIMIZATION
     optimize_memory
+
+    # Configure memory frameworks after installation
+    ram_configure_memory_frameworks
 
     # Section E — VIRTUAL RESOURCES
     install_virtualization
@@ -11347,3 +11395,50 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
     main "$@"
 fi
+
+# Integrate Intel performance libraries
+integrate_intel_performance_libraries() {
+    header "Integrating Intel Performance Libraries"
+
+    local intel_libs_dir="/opt/intel-optimized-libs"
+    run_cmd mkdir -p "$intel_libs_dir"
+
+    log "Installing Intel IPP Cryptography..."
+    if [[ ! -d "$intel_libs_dir/ipp-crypto" ]]; then
+        if command -v git &>/dev/null; then
+            git clone --depth 1 https://github.com/intel/ipp-crypto.git "$intel_libs_dir/ipp-crypto" 2>/dev/null || \
+            warn "IPP Crypto clone failed - continuing"
+        fi
+    fi
+
+    log "Installing Optimizing DGEMM on Intel CPUs with AVX512F..."
+    if [[ ! -d "$intel_libs_dir/dgemm-optimization" ]]; then
+        if command -v git &>/dev/null; then
+            git clone --depth 1 https://github.com/intel/Optimizing-DGEMM-on-Intel-CPUs-with-AVX512F.git \
+                "$intel_libs_dir/dgemm-optimization" 2>/dev/null || \
+            warn "DGEMM optimization clone failed - continuing"
+        fi
+    fi
+
+    log "Installing highwayhash (MinIO)..."
+    if [[ ! -d "$intel_libs_dir/highwayhash" ]]; then
+        if command -v git &>/dev/null; then
+            git clone --depth 1 https://github.com/minio/highwayhash.git "$intel_libs_dir/highwayhash" 2>/dev/null || \
+            warn "Highwayhash clone failed - continuing"
+        fi
+    fi
+
+    log "Configuring environment for Intel libraries..."
+    run_cmd mkdir -p /etc/environment.d
+    write_file "/etc/environment.d/98-intel-libs.conf" '# Intel Performance Libraries
+INTEL_OPTIMIZED_LIBS=/opt/intel-optimized-libs
+PATH=$PATH:$INTEL_OPTIMIZED_LIBS/ipp-crypto/bin:$INTEL_OPTIMIZED_LIBS/highwayhash
+# Enable AVX512F for optimized operations
+MKL_NUM_THREADS=16
+OMP_NUM_THREADS=16
+# Enable AES-NI acceleration
+OPENSSL_ia32cap=0x200000200000000'
+
+    success "Intel performance libraries integration complete"
+    return 0
+}
