@@ -1,8 +1,8 @@
-# Fedora 43 Advanced System Optimizer — Dual-GPU Workstation
+# Fedora 44 Advanced System Optimizer — Dual-GPU Workstation
 
 Version 8.0.0
 
-A comprehensive, production-ready optimization script for Fedora 43 Linux targeting maximum performance with power efficiency for desktop, gaming, AI/compute, and development workloads.
+A comprehensive, production-ready optimization script for Fedora 44 Linux targeting maximum performance with power efficiency for desktop, gaming, AI/compute, and development workloads.
 
 ---
 
@@ -13,7 +13,7 @@ A comprehensive, production-ready optimization script for Fedora 43 Linux target
 - **GPU 1**: AMD RX 6400 XT (Primary Display)
 - **GPU 2**: NVIDIA RTX 3050 (Compute/Offload)
 - **Motherboard**: ASUS ROG Strix Z390-F Gaming
-- **OS**: Fedora Linux 43 (Xfce, X11)
+- **OS**: Fedora Linux 44 (Xfce, X11)
 
 ---
 
@@ -317,7 +317,7 @@ Each backup includes a manifest, metadata, individual file backups, and a tarbal
 
 ## Requirements
 
-- **Fedora Linux 43** (enforced at runtime)
+- **Fedora Linux 44** (enforced at runtime)
 - Root privileges for system optimization (`sudo`)
 - Internet connection for package installation
 
